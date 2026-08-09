@@ -21,6 +21,15 @@ directed and reviewed by a human. See [How this was written](#how-this-was-writt
 
 Requires Go 1.22+. No modules to download.
 
+## Install
+
+    make install
+
+Builds the binary and installs it to `/usr/local/bin/tarot`. Override the
+prefix with `make install PREFIX=$HOME/.local` to install elsewhere (the
+binary lands in `$PREFIX/bin`). `make uninstall` removes it, and `make clean`
+removes the local build artifact.
+
 ## Usage
 
     ./tarot [flags] [your question here]
