@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,30 +13,48 @@ type mode string
 
 const (
 	modeCeltic   mode = "celtic"
-	modeThree    mode = "three"
 	modeFreeform mode = "freeform"
 	modeExplore  mode = "explore"
 	modeCarousel mode = "carousel"
 )
 
-var modeMenu = []struct {
+type menuEntry struct {
 	mode  mode
 	title string
 	blurb string
-}{
-	{modeCeltic, "Celtic cross", "ten cards, the full spread"},
-	{modeThree, "Three card", "past, present, future"},
-	{modeFreeform, "Free form", "keep drawing from the pile, as many as you like"},
-	{modeExplore, "Explore", "walk the deck in order, no shuffling"},
-	{modeCarousel, "Carousel", "cards turn over on their own, on a timer"},
+}
+
+// modeMenu is every reading on offer: the spreads first, then the browsing
+// modes.
+var modeMenu = func() []menuEntry {
+	menu := make([]menuEntry, 0, len(spreadOrder)+3)
+	for _, s := range spreadOrder {
+		menu = append(menu, menuEntry{mode(s.Key), s.Title, s.Blurb})
+	}
+	return append(menu,
+		menuEntry{modeFreeform, "Free form", "keep drawing from the pile, as many as you like"},
+		menuEntry{modeExplore, "Explore", "walk the deck in order, no shuffling"},
+		menuEntry{modeCarousel, "Carousel", "cards turn over on their own, on a timer"},
+	)
+}()
+
+// spreadNames lists the spread keys for error messages.
+func spreadNames() string {
+	names := make([]string, 0, len(spreadOrder))
+	for _, s := range spreadOrder {
+		names = append(names, s.Key)
+	}
+	return strings.Join(names, ", ")
 }
 
 // plan is what the reader settled on: which mode, and for the carousel, how it
-// draws and how long each card stays up.
+// draws and how long each card stays up. reversals is set only when the reader
+// was asked; otherwise the flag stands.
 type plan struct {
-	mode    mode
-	ordered bool
-	dwell   time.Duration
+	mode      mode
+	ordered   bool
+	dwell     time.Duration
+	reversals *bool
 }
 
 // ui carries everything the interactive loops need.
@@ -49,29 +68,49 @@ type ui struct {
 
 // chooseMode shows the mode picker. It returns false if the user quits.
 func chooseMode(u *ui) (plan, bool) {
-	for {
-		u.t.clear()
-		u.t.print("\n How would you like to read?\n\n")
-		for i, m := range modeMenu {
-			u.t.print(fmt.Sprintf("  %d) %-14s %s\n", i+1, m.title, m.blurb))
-		}
-		u.t.print("  q) Quit\n")
+	items := make([]menuItem, 0, len(modeMenu))
+	for _, m := range modeMenu {
+		items = append(items, menuItem{m.title, m.blurb})
+	}
+	i, ok := u.t.menu("How would you like to read?", items, menuKeys)
+	if !ok {
+		return plan{}, false
+	}
 
-		choice, ok := u.t.askLine("\n Choice: ")
-		if !ok || choice == keyQuit {
-			return plan{}, false
-		}
-		n, err := strconv.Atoi(choice)
-		if err != nil || n < 1 || n > len(modeMenu) {
-			u.t.print(" Pick a number from the list, or q.\n")
-			continue
-		}
-		m := modeMenu[n-1].mode
-		if m != modeCarousel {
-			return plan{mode: m}, true
-		}
+	m := modeMenu[i].mode
+	if m == modeCarousel {
 		return chooseCarousel(u)
 	}
+	// Every reading that shuffles a pile asks; explore walks the deck in order,
+	// so there is nothing to ask about there.
+	p := plan{mode: m}
+	if _, spread := spreads[string(m)]; spread || m == modeFreeform {
+		if p.reversals, ok = askReversals(u); !ok {
+			return plan{}, false
+		}
+	}
+	return p, true
+}
+
+// askReversals asks whether cards may come up reversed, defaulting to whatever
+// the flags already say.
+func askReversals(u *ui) (*bool, bool) {
+	def := "Y/n"
+	if !u.pile.reversals {
+		def = "y/N"
+	}
+	answer, ok := u.t.askKey(fmt.Sprintf(" Include reversed cards? [%s]: ", def))
+	if !ok || answer == keyQuit || answer == keyEsc {
+		return nil, false
+	}
+	value := u.pile.reversals
+	switch answer {
+	case "y", "yes":
+		value = true
+	case "n", "no":
+		value = false
+	}
+	return &value, true
 }
 
 // chooseCarousel asks how the carousel should run: where the cards come from,
@@ -82,14 +121,20 @@ func chooseCarousel(u *ui) (plan, bool) {
 		p.dwell = defaultDwell
 	}
 
-	u.t.print("\n Where should the cards come from?\n\n")
-	u.t.print("  1) In order through the deck\n")
-	u.t.print("  2) Drawn at random from the pile\n")
-	choice, ok := u.t.askLine("\n Choice [1]: ")
-	if !ok || choice == keyQuit {
+	source, ok := u.t.menu("Where should the cards come from?", []menuItem{
+		{"In order", "through the deck, as the guide lays it out"},
+		{"At random", "drawn from the pile"},
+	}, menuKeys)
+	if !ok {
 		return plan{}, false
 	}
-	p.ordered = choice != "2"
+	p.ordered = source == 0
+	if !p.ordered {
+		// Drawing at random from the pile, so reversals are in play.
+		if p.reversals, ok = askReversals(u); !ok {
+			return plan{}, false
+		}
+	}
 
 	for {
 		secs, ok := u.t.askLine(fmt.Sprintf(" Seconds per card [%d]: ", int(p.dwell.Seconds())))
@@ -109,26 +154,80 @@ func chooseCarousel(u *ui) (plan, bool) {
 	}
 }
 
-// showCard puts a card up and handles the keys available while it is there. It
+// showCard puts a card up and handles the keys available while it is there. r
+// may be nil; when it is a laid out spread, "a" shows the whole tableau. It
 // returns false when the reader wants out.
-func (u *ui) showCard(p Position, hints string) bool {
-	opts := u.opts
+func (u *ui) showCard(p Position, r *Reading, hints string) bool {
 	for {
-		key, ok := u.t.view(page(p, opts), hints)
+		key, ok := u.t.view(page(p, u.opts), hints)
 		if !ok || key == keyQuit {
 			return false
 		}
 		switch key {
-		case keyEnter, keyRight, "n":
+		case keyEnter, keyRight, "n", keyBksp, keyEsc:
 			return true
 		case "m":
 			if !u.showMindful(p) {
 				return false
 			}
+		case "a":
+			if r != nil && !u.showTableau(r) {
+				return false
+			}
+		case "t":
+			// Strip the card back to its picture, or put the words back. It
+			// stays that way until it is turned back on.
+			u.opts.bare = !u.opts.bare
 		case "w":
-			opts.detail = !opts.detail
+			u.opts.detail = !u.opts.detail
 		}
 	}
+}
+
+// showTableau lays the whole spread out, every card pictured in its place. A
+// card's number opens it there and then; anything else goes back.
+func (u *ui) showTableau(r *Reading) bool {
+	if !hasLayout(r.Spread) {
+		return true
+	}
+	hints := fmt.Sprintf("%s open a card · esc back", cardKeys(len(r.Positions)))
+	for {
+		key, ok := u.t.viewScroll(tableau(r, u.opts), hints, true)
+		if !ok || key == keyQuit {
+			return false
+		}
+		i, isCard := cardKey(key, len(r.Positions))
+		if !isCard {
+			return true
+		}
+		if !u.showCard(r.Positions[i], nil, "enter back to the layout · m mindful · w Waite · q quit") {
+			return false
+		}
+	}
+}
+
+// cardKey reads a card number off a keypress. With ten cards in a spread, 0
+// stands for the tenth so that a single key is always enough.
+func cardKey(key string, cards int) (int, bool) {
+	if len(key) != 1 || key[0] < '0' || key[0] > '9' {
+		return 0, false
+	}
+	n := int(key[0] - '0')
+	if n == 0 {
+		n = 10
+	}
+	if n > cards {
+		return 0, false
+	}
+	return n - 1, true
+}
+
+// cardKeys describes which keys open which card, for the status bar.
+func cardKeys(cards int) string {
+	if cards >= 10 {
+		return "1-9 and 0"
+	}
+	return fmt.Sprintf("1-%d", cards)
 }
 
 // showMindful puts the contemplative essay up in its own scrollable view.
@@ -145,12 +244,24 @@ func runSpread(u *ui, s *Spread) *Reading {
 	}
 	r := newReading(u.deck, u.pile, s, u.query, progress)
 
+	if u.opts.layout {
+		// Straight to the tableau, then the review: no card by card walk.
+		if !u.showTableau(r) {
+			return r
+		}
+		review(u, r)
+		return r
+	}
 	if !u.opts.quiet {
 		u.t.print("Beginning reading\n")
 	}
 	u.t.print("\n" + header(r))
+	hints := "enter next · a layout · t text · m mindful · w Waite · q quit"
+	if !hasLayout(s) {
+		hints = "enter next · t text · m mindful · w Waite · q quit"
+	}
 	for _, p := range r.Positions {
-		if !u.showCard(p, "enter next · m mindful · w Waite · q quit") {
+		if !u.showCard(p, r, hints) {
 			return r
 		}
 	}
@@ -168,11 +279,14 @@ func review(u *ui, r *Reading) {
 		}
 		u.t.print("\n")
 		for i, p := range r.Positions {
-			name := p.Name
-			if name == "" {
-				name = fmt.Sprintf("Card %d", i+1)
+			label := p.Label
+			if label == "" {
+				label = fmt.Sprintf("Draw %d", i+1)
 			}
-			u.t.print(fmt.Sprintf("  %2d) %-34s %s\n", i+1, name, p.title()))
+			u.t.print(fmt.Sprintf("  %2d) %-34s %s\n", i+1, label, p.Card.Title()))
+		}
+		if hasLayout(r.Spread) {
+			u.t.print("   a) See the whole spread laid out\n")
 		}
 		u.t.print("   x) Export reading and quit\n")
 		u.t.print("   q) Just quit\n")
@@ -184,6 +298,10 @@ func review(u *ui, r *Reading) {
 		switch choice {
 		case keyQuit, "":
 			return
+		case "a":
+			if !u.showTableau(r) {
+				return
+			}
 		case "x":
 			u.export(r)
 			return
@@ -193,7 +311,7 @@ func review(u *ui, r *Reading) {
 				u.t.print(" Pick a card number, x, or q.\n")
 				continue
 			}
-			if !u.showCard(r.Positions[n-1], "enter back to the review · m mindful · q quit") {
+			if !u.showCard(r.Positions[n-1], r, "enter back to the review · a layout · m mindful · q quit") {
 				return
 			}
 		}
@@ -224,9 +342,9 @@ func runFreeform(u *ui) *Reading {
 				return r
 			}
 			p := place(u.deck, card, nil)
-			p.Name = fmt.Sprintf("Draw %d", len(r.Positions)+1)
+			p.Draw = len(r.Positions) + 1
 			r.Positions = append(r.Positions, p)
-			if !u.showCard(p, "enter back to the pile · m mindful · q quit") {
+			if !u.showCard(p, nil, "enter back to the pile · t text · m mindful · q quit") {
 				return r
 			}
 		case "l":
@@ -236,14 +354,14 @@ func runFreeform(u *ui) *Reading {
 			}
 			u.t.print("\n")
 			for i, p := range r.Positions {
-				u.t.print(fmt.Sprintf("  %2d) %s\n", i+1, p.title()))
+				u.t.print(fmt.Sprintf("  %2d) %s\n", i+1, p.heading()))
 			}
 		case "x":
 			u.export(r)
 			return r
 		default:
 			if n, err := strconv.Atoi(key); err == nil && n >= 1 && n <= len(r.Positions) {
-				if !u.showCard(r.Positions[n-1], "enter back to the pile · m mindful · q quit") {
+				if !u.showCard(r.Positions[n-1], nil, "enter back to the pile · t text · m mindful · q quit") {
 					return r
 				}
 				continue

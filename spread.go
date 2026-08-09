@@ -71,23 +71,24 @@ var celticSpread = &Spread{
 	},
 }
 
-// threeSpread is the classic past / present / future reading.
+// threeSpread is the three card reading: what the matter shows you, what it
+// tells you, and what to take away from it.
 var threeSpread = &Spread{
 	Key:   "three",
 	Title: "Three card",
-	Blurb: "past, present, future",
+	Blurb: "mirror, oracle, talisman",
 	Positions: []PositionDef{
 		{
-			Name:    "Card 1: The Past",
-			Meaning: "The Past - What has already happened and still shapes the question: the history, the choices, and the conditions you are carrying into the present.",
+			Name:    "Card 1: The Mirror",
+			Meaning: "The Mirror - What the matter reflects back at you: how you are showing up to it, the part of it you have authored yourself, and what you would see if you were looking from outside.",
 		},
 		{
-			Name:    "Card 2: The Present",
-			Meaning: "The Present - Where the matter stands today: the energy at work right now, what has your attention, and what is being asked of you in this moment.",
+			Name:    "Card 2: The Oracle",
+			Meaning: "The Oracle - What the matter is telling you. The message underneath the circumstances: where this is heading, and what is being asked of you while it does.",
 		},
 		{
-			Name:    "Card 3: The Future",
-			Meaning: "The Future - Where the current course leads. Not a verdict but a trajectory: what unfolds if the present conditions are allowed to run on.",
+			Name:    "Card 3: The Talisman",
+			Meaning: "The Talisman - What to carry out of this. The strength, caution, or charm worth keeping hold of once the situation itself has passed.",
 		},
 	},
 }
@@ -96,3 +97,6 @@ var spreads = map[string]*Spread{
 	celticSpread.Key: celticSpread,
 	threeSpread.Key:  threeSpread,
 }
+
+// spreadOrder is how the spreads are offered, widest first.
+var spreadOrder = []*Spread{celticSpread, threeSpread}

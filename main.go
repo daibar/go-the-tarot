@@ -19,19 +19,26 @@ type options struct {
 	detail  bool
 	quiet   bool
 	noFancy bool
+	bare    bool          // just the picture: no drawing, no words
+	layout  bool          // open a spread on its tableau
+	cols    int           // terminal width the page is laid out for
+	rows    int           // terminal height, for sizing the tableau
 	dwell   time.Duration // carousel pace; 0 means wait for a keypress
 }
 
 func main() {
 	var (
-		modeFlag    = flag.String("mode", "", "reading to do: celtic, three, freeform, or explore (default: ask)")
+		modeFlag    = flag.String("mode", "", "reading to do: celtic, three, freeform, explore, or carousel (default: ask)")
 		artFlag     = flag.String("art", string(artBoth), "card pictures: both, photo, sketch, or none")
-		noReversals = flag.Bool("no-reversals", false, "draw every card upright: no reversed readings")
+		reversals   = flag.Bool("reversals", true, "let cards come up reversed")
+		noReversals = flag.Bool("no-reversals", false, "draw every card upright (the same as -reversals=false)")
 		noFancy     = flag.Bool("no-fancy", false, "print the whole reading at once: no pictures, no walkthrough, no review")
 		noColor     = flag.Bool("no-color", false, "render pictures without ANSI color")
-		detail      = flag.Bool("detail", false, "always show the Waite (1911) meanings, not just on the d key")
+		detail      = flag.Bool("detail", false, "always show the Waite (1911) meanings, not just on the w key")
 		quiet       = flag.Bool("quiet", false, "skip the \"drawing card N\" chatter")
-		height      = flag.Int("height", 24, "height in rows of the card pictures")
+		height      = flag.Int("height", 0, "height in rows of the card pictures (0 = fit the terminal)")
+		layout      = flag.Bool("layout", false, "open a spread on its tableau and skip the card by card walkthrough")
+		random      = flag.Bool("random", false, "carousel: draw at random from the pile rather than walking the deck in order")
 		dwell       = flag.Int("dwell", 0, "carousel: seconds each card stays up before the next turns over (0 = turn them by hand)")
 		seed        = flag.Int64("seed", 0, "fixed random seed, for reproducible readings (0 = derive from query and clock)")
 		export      = flag.Bool("export", false, "write the reading to ~/tarot_reading_DATE.txt and exit")
@@ -45,6 +52,16 @@ func main() {
 		for _, m := range modeMenu {
 			fmt.Fprintf(out, "  %-10s %s\n", m.mode, m.blurb)
 		}
+		fmt.Fprintf(out, `
+Every mode and option can be reached from the command line, without the menu:
+
+  %[1]s -mode celtic -no-reversals        upright ten card spread
+  %[1]s -mode three -layout               three cards, straight to the tableau
+  %[1]s -mode freeform -reversals         keep drawing, reversals on
+  %[1]s -mode carousel -dwell 90          a card every 90 seconds, in order
+  %[1]s -mode carousel -random -dwell 30  ... drawn at random instead
+  %[1]s -mode explore -art sketch         browse the deck as line drawings
+`, filepath.Base(os.Args[0]))
 	}
 	flag.Parse()
 
@@ -56,9 +73,11 @@ func main() {
 		quiet:   *quiet,
 		noFancy: *noFancy,
 		dwell:   time.Duration(*dwell) * time.Second,
+		layout:  *layout,
 	}, runFlags{
 		query:       strings.Join(flag.Args(), " "),
-		reversals:   !*noReversals,
+		reversals:   *reversals && !*noReversals,
+		random:      *random,
 		seed:        *seed,
 		export:      *export,
 		notesPath:   *notesPath,
@@ -72,6 +91,7 @@ func main() {
 type runFlags struct {
 	query       string
 	reversals   bool
+	random      bool
 	seed        int64
 	export      bool
 	notesPath   string
@@ -92,6 +112,11 @@ func run(modeFlag string, opts options, f runFlags) error {
 	if err != nil {
 		return err
 	}
+	if opts.noFancy || f.export {
+		if opts.height <= 0 {
+			opts.height = maxArtHeight
+		}
+	}
 	rng := rand.New(rand.NewSource(seedFrom(f.seed, f.query)))
 	pile := newPile(deck, rng, f.reversals)
 
@@ -100,7 +125,7 @@ func run(modeFlag string, opts options, f runFlags) error {
 		s := spreads[string(mode(strings.ToLower(modeFlag)))]
 		if s == nil {
 			if modeFlag != "" && mode(strings.ToLower(modeFlag)) != modeCeltic {
-				return fmt.Errorf("%s needs a terminal: use -mode celtic or -mode three here", modeFlag)
+				return fmt.Errorf("%s needs a terminal: use one of %s here", modeFlag, spreadNames())
 			}
 			s = celticSpread
 		}
@@ -125,14 +150,24 @@ func run(modeFlag string, opts options, f runFlags) error {
 	defer t.close()
 	restoreOnSignal(t)
 
+	// Lay the page out for the terminal we actually have, so a card has a
+	// chance of fitting on one screen.
+	opts.cols, opts.rows = t.cols, t.rows
+	if opts.height <= 0 {
+		opts.height = min(max(t.rows-6, 8), maxArtHeight)
+	}
+
 	u := &ui{t: t, deck: deck, pile: pile, opts: opts, query: f.query}
 
-	p, err := pickMode(u, modeFlag)
+	p, err := pickMode(u, modeFlag, f)
 	if err != nil {
 		return err
 	}
 	if p.mode == "" {
 		return nil // the reader quit at the menu
+	}
+	if p.reversals != nil {
+		pile.reversals = *p.reversals
 	}
 
 	switch p.mode {
@@ -165,7 +200,7 @@ func restoreOnSignal(t *term) {
 // pickMode resolves -mode, or asks when the flag is absent. A dwell time turns
 // explore and freeform into the carousel, which is what the flag combination
 // means: the same cards, turning over on their own.
-func pickMode(u *ui, modeFlag string) (plan, error) {
+func pickMode(u *ui, modeFlag string, f runFlags) (plan, error) {
 	if modeFlag == "" {
 		p, ok := chooseMode(u)
 		if !ok {
@@ -175,10 +210,11 @@ func pickMode(u *ui, modeFlag string) (plan, error) {
 	}
 
 	m := mode(strings.ToLower(modeFlag))
-	p := plan{mode: m, ordered: true, dwell: u.opts.dwell}
-	switch m {
-	case modeCeltic, modeThree:
+	p := plan{mode: m, ordered: !f.random, dwell: u.opts.dwell}
+	if _, ok := spreads[string(m)]; ok {
 		return p, nil
+	}
+	switch m {
 	case modeExplore:
 		if p.dwell > 0 {
 			p.mode = modeCarousel
@@ -195,7 +231,7 @@ func pickMode(u *ui, modeFlag string) (plan, error) {
 		}
 		return p, nil
 	}
-	return plan{}, fmt.Errorf("unknown -mode %q: want celtic, three, freeform, explore, or carousel", modeFlag)
+	return plan{}, fmt.Errorf("unknown -mode %q: want %s, freeform, explore, or carousel", modeFlag, spreadNames())
 }
 
 // seedFrom mixes the query string into the clock, as the bash version did with

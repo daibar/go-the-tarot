@@ -218,6 +218,7 @@ func loadNotes(path string) (*Guide, error) {
 		}
 		if fixed, ok := notesNameFixups[name]; ok {
 			delete(g.ByName, name)
+			n.Label = strings.Replace(n.Label, name, fixed, 1)
 			n.Name = fixed
 			g.ByName[fixed] = n
 		}

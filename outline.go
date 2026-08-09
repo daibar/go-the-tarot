@@ -80,6 +80,35 @@ func (o *outline) moveCard(delta int) {
 	}
 }
 
+// find looks for the next card whose name matches q, searching from the row
+// after from in direction dir and wrapping around. It returns -1 for no match.
+func (o *outline) find(q string, from, dir int) int {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return -1
+	}
+	for n := 1; n <= len(o.rows); n++ {
+		i := ((from+dir*n)%len(o.rows) + len(o.rows)) % len(o.rows)
+		r := o.rows[i]
+		if r.heading {
+			continue
+		}
+		if strings.Contains(strings.ToLower(r.label), q) {
+			return i
+		}
+	}
+	return -1
+}
+
+// jump puts the cursor on a row, unfolding whatever section hides it.
+func (o *outline) jump(i int) {
+	if i < 0 || i >= len(o.rows) {
+		return
+	}
+	o.collapsed[o.rows[i].section] = false
+	o.cursor = i
+}
+
 // render draws the outline into height rows, scrolled to keep the cursor shown.
 // highlight is off when there is no terminal to steer, so the plain listing
 // does not carry stray escape codes.
@@ -115,11 +144,12 @@ func (o *outline) render(height, cols int, highlight bool) string {
 }
 
 // runExplore browses the deck through the guide's outline: arrows to move,
-// right or enter to open a card, left to fold a section away.
+// right or enter to open a card, left to fold a section away, / to search.
 func runExplore(u *ui) {
 	o := newOutline(u.deck.guide)
 	o.move(1) // start on the first card rather than its heading
 	reversed := false
+	query, notice := "", ""
 
 	for {
 		if !u.t.raw {
@@ -129,9 +159,12 @@ func runExplore(u *ui) {
 			u.t.clear()
 			u.t.print(" The deck, as the guide lays it out\n")
 			u.t.print(o.render(u.t.rows-3, u.t.cols, true))
-			hint := " arrows or j/k move · right opens · left folds · r reverse · q quit"
-			if reversed {
-				hint = " reversed · " + hint[1:]
+			hint := " arrows move · right opens · left folds · / search · r reverse · q quit"
+			switch {
+			case notice != "":
+				hint = " " + notice + " ·" + hint
+			case reversed:
+				hint = " reversed ·" + hint
 			}
 			u.t.statusBar(hint)
 		}
@@ -141,7 +174,33 @@ func runExplore(u *ui) {
 			return
 		}
 		row := o.rows[o.cursor]
+		notice = "" // the last message only lasts until the next keypress
 		switch key {
+		case "/":
+			asked, ok := u.t.promptLine(" search: ")
+			if !ok {
+				return
+			}
+			query = asked
+			if i := o.find(query, o.cursor, 1); i >= 0 {
+				o.jump(i)
+			} else if query != "" {
+				notice = "no card matching " + query
+			}
+		case "n", "N":
+			if query == "" {
+				notice = "nothing searched for yet"
+				break
+			}
+			dir := 1
+			if key == "N" {
+				dir = -1
+			}
+			if i := o.find(query, o.cursor, dir); i >= 0 {
+				o.jump(i)
+			} else {
+				notice = "no card matching " + query
+			}
 		case keyDown, "j":
 			o.move(1)
 		case keyUp, "k":
@@ -199,7 +258,6 @@ func exploreCard(u *ui, o *outline, reversed bool) bool {
 			return true
 		}
 		p := place(u.deck, u.deck.reversed(card, reversed), nil)
-		p.Name = row.label
 
 		key, ok := u.t.view(page(p, opts), "right next · left prev · backspace outline · m mindful · r reverse · q quit")
 		if !ok || key == keyQuit {

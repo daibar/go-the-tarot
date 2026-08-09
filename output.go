@@ -6,7 +6,13 @@ import (
 	"strings"
 )
 
-const wrapWidth = 65
+const (
+	wrapWidth    = 65 // widest the prose ever wraps
+	minTextWidth = 34 // narrower than this and the words go under the picture
+	defaultCols  = 80
+	maxArtHeight = 24 // the picture never grows past this, however tall the terminal
+	artGap       = 2  // columns between the picture and the words
+)
 
 const divider = " *****************************************************************"
 
@@ -70,8 +76,8 @@ func visibleWidth(s string) int {
 	return len([]rune(ansiPattern.ReplaceAllString(s, "")))
 }
 
-// sideBySide lays the right block out to the right of the left one, centering
-// the shorter of the two vertically.
+// sideBySide lays the right block out to the right of the left one, both
+// starting at the top.
 func sideBySide(left, right []string, gap int) []string {
 	if len(left) == 0 {
 		return right
@@ -85,46 +91,45 @@ func sideBySide(left, right []string, gap int) []string {
 			width = w
 		}
 	}
-	// Whichever block is shorter gets padded out at the top.
-	height := max(len(left), len(right))
-	leftTop := (height - len(left)) / 2
-	rightTop := (height - len(right)) / 2
-
-	out := make([]string, height)
+	// Both columns start at the top: the drawing and the words beneath it read
+	// as one column beside the picture.
+	out := make([]string, max(len(left), len(right)))
 	for i := range out {
 		var l, r string
-		if i >= leftTop && i-leftTop < len(left) {
-			l = left[i-leftTop]
+		if i < len(left) {
+			l = left[i]
 		}
-		if i >= rightTop && i-rightTop < len(right) {
-			r = right[i-rightTop]
+		if i < len(right) {
+			r = right[i]
 		}
 		pad := width - visibleWidth(l) + gap
-		out[i] = l + strings.Repeat(" ", pad) + r
+		out[i] = strings.TrimRight(l+strings.Repeat(" ", pad)+r, " ")
 	}
 	return out
 }
 
-// art pictures the card in the configured style.
-func art(p Position, opts options) string {
-	var photo, drawing []string
-	if opts.art == artPhoto || opts.art == artBoth {
-		rendered, err := renderCard(p.Card, opts.height, opts.color)
-		if err != nil {
-			return fmt.Sprintf("  (no image: %v)\n", err)
-		}
-		photo = strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+// photoLines renders the deck scan, or nothing if the style leaves it out.
+func photoLines(p Position, opts options) []string {
+	if opts.art != artPhoto && opts.art != artBoth {
+		return nil
 	}
-	if opts.art == artSketch || opts.art == artBoth {
-		if s := sketch(p); s != "" {
-			drawing = strings.Split(s, "\n")
-		}
+	rendered, err := renderCard(p.Card, opts.height, opts.color)
+	if err != nil {
+		return []string{fmt.Sprintf("(no image: %v)", err)}
 	}
-	lines := sideBySide(photo, drawing, 3)
-	if len(lines) == 0 {
-		return ""
+	return strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+}
+
+// sketchLines is the guide's drawing, or nothing if the style leaves it out.
+func sketchLines(p Position, opts options) []string {
+	if opts.art != artSketch && opts.art != artBoth {
+		return nil
 	}
-	return indent(strings.Join(lines, "\n"), " ") + "\n \n"
+	s := sketch(p)
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }
 
 // sketch is the line drawing from the guide, flipped for a reversed card.
@@ -141,32 +146,92 @@ func sketch(p Position) string {
 	return strings.Join(lines, "\n")
 }
 
-// page is the full display for one card: the position it fell in, the picture,
-// what is drawn on it, its name, and the guide's summary for this orientation.
-func page(p Position, opts options) string {
+// cardText is everything written about the card, wrapped to width: what is
+// drawn on it, what the position it fell in signifies, and the guide's summary
+// for this orientation. The card's name belongs to the heading, not here.
+func cardText(p Position, opts options, width int) []string {
 	var sb strings.Builder
-	if p.Name != "" {
-		fmt.Fprintf(&sb, "  %s\n \n", p.Name)
-	}
-	sb.WriteString(art(p, opts))
 	if p.Notes != nil {
-		sb.WriteString(block("", p.Notes.Imagery))
+		sb.WriteString(para(p.Notes.Imagery, width))
 	}
-	fmt.Fprintf(&sb, "  %s\n \n", p.title())
+	sb.WriteString(para(p.Meaning, width))
 
-	sb.WriteString(block("", p.Meaning))
-
-	orientation := "Upright:"
+	orientation := "Upright: "
 	if p.Card.Reversed {
-		orientation = "Reversed:"
+		orientation = "Reversed: "
 	}
-	sb.WriteString(block(orientation, p.Notes.Summary(p.Card.Reversed)))
+	sb.WriteString(para(orientation+p.Notes.Summary(p.Card.Reversed), width))
+	if opts.detail && p.Notes != nil {
+		sb.WriteString(para("Waite (1911): "+p.Notes.Waite(p.Card.Reversed), width))
+	}
+	return strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
+}
 
-	if opts.detail {
-		sb.WriteString(detail(p))
+// para wraps a paragraph and leaves a blank line after it.
+func para(text string, width int) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
 	}
+	return wrap(text, width) + "\n\n"
+}
+
+// page lays a card out: the deck scan on the left, and the guide's drawing with
+// the words beneath it on the right, so a whole card fits on one screen.
+func page(p Position, opts options) string {
+	photo := photoLines(p, opts)
+	cols := opts.cols
+	if cols <= 0 {
+		cols = defaultCols
+	}
+
+	// The words take whatever the picture leaves, within reason; if that is too
+	// cramped they go underneath it instead.
+	width := wrapWidth
+	if len(photo) > 0 {
+		width = min(cols-columnWidth(photo)-artGap-2, wrapWidth)
+	}
+
+	var lines []string
+	switch {
+	case opts.bare:
+		// Just the picture, unnamed: something to sit with rather than read.
+		lines = photo
+	case width < minTextWidth:
+		width = min(cols-2, wrapWidth)
+		lines = append(lines, photo...)
+		lines = append(lines, "")
+		lines = append(lines, sketchLines(p, opts)...)
+		lines = append(lines, "")
+		lines = append(lines, cardText(p, opts, width)...)
+	default:
+		right := sketchLines(p, opts)
+		if len(right) > 0 {
+			right = append(right, "")
+		}
+		right = append(right, cardText(p, opts, width)...)
+		lines = sideBySide(photo, right, artGap)
+	}
+
+	var sb strings.Builder
+	if !opts.bare {
+		fmt.Fprintf(&sb, "  %s\n", p.heading())
+		if p.Label != "" {
+			fmt.Fprintf(&sb, "  %s\n", p.Label)
+		}
+		sb.WriteString(" \n")
+	}
+	sb.WriteString(indent(strings.Join(lines, "\n"), " ") + "\n \n")
 	sb.WriteString(divider + "\n")
 	return sb.String()
+}
+
+// columnWidth is the widest visible line in a block.
+func columnWidth(lines []string) int {
+	w := 0
+	for _, l := range lines {
+		w = max(w, visibleWidth(l))
+	}
+	return w
 }
 
 // detail is Waite's 1911 divinatory meaning for this orientation.

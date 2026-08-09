@@ -248,12 +248,44 @@ func (t *term) clear() {
 	}
 }
 
+// askKey prints a prompt and waits for a single keypress, echoing it. Menus use
+// it so that q quits on the key alone, without waiting for Enter.
+func (t *term) askKey(prompt string) (string, bool) {
+	t.print(prompt)
+	if !t.raw {
+		line, ok := t.lineKey()
+		t.print("\n")
+		return line, ok
+	}
+	k, ok := t.key()
+	if !ok {
+		return "", false
+	}
+	if len([]rune(k)) == 1 {
+		fmt.Print(k)
+	}
+	t.print("\n")
+	return k, true
+}
+
+// promptLine reads a line over the top of the bottom status bar, the way a
+// pager takes a search.
+func (t *term) promptLine(prompt string) (string, bool) {
+	if t.raw {
+		fmt.Print("\r\x1b[2K")
+	}
+	return t.askLine(prompt)
+}
+
 // ask prints a prompt and reads a line of text (used outside the full screen
 // views, where a keypress is not enough).
 func (t *term) askLine(prompt string) (string, bool) {
 	t.print(prompt)
 	if !t.raw {
 		line, ok := t.lineKey()
+		if line == keyEnter {
+			line = "" // a bare newline is an empty answer, not a keypress
+		}
 		t.print("\n") // nothing echoes a piped line back for us
 		return line, ok
 	}

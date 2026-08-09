@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // viKeys is the scrolling half of every view's help line.
@@ -57,15 +58,49 @@ func scroll(key string, top, height int) (int, bool) {
 // Without a terminal it simply prints everything and reads one key, so piped
 // input and redirected output still behave.
 func (t *term) view(body, hints string) (string, bool) {
+	return t.viewScroll(body, hints, false)
+}
+
+// viewScroll is view, optionally panning sideways as well. Only the tableau
+// wants that: everywhere else left and right mean something to the caller.
+func (t *term) viewScroll(body, hints string, sideways bool) (string, bool) {
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	top := 0
+	widest := 0
+	for _, l := range lines {
+		widest = max(widest, visibleWidth(l))
+	}
+
+	top, left := 0, 0
 	for {
-		top = t.paint(lines, top, func(top, maxTop int) string {
-			return fmt.Sprintf(" %s · %s · %s", where(top, maxTop), viKeys, hints)
+		shown := lines
+		if sideways && left > 0 {
+			shown = make([]string, len(lines))
+			for i, l := range lines {
+				shown[i] = sliceVisible(l, left, t.cols)
+			}
+		}
+		top = t.paint(shown, top, func(top, maxTop int) string {
+			keys := viKeys
+			if sideways && widest > t.cols {
+				keys += " · h/l pan"
+			}
+			return fmt.Sprintf(" %s · %s · %s", where(top, maxTop), keys, hints)
 		})
+
 		key, ok := t.key()
 		if !ok {
 			return "", false
+		}
+		if sideways {
+			step := max(t.cols/4, 4)
+			switch key {
+			case keyRight, "l":
+				left = min(left+step, max(widest-t.cols, 0))
+				continue
+			case keyLeft, "h":
+				left = max(left-step, 0)
+				continue
+			}
 		}
 		next, handled := scroll(key, top, t.rows-1)
 		if !handled {
@@ -73,6 +108,39 @@ func (t *term) view(body, hints string) (string, bool) {
 		}
 		top = next
 	}
+}
+
+// sliceVisible takes width visible columns of a line starting at from, keeping
+// the colour escapes that go with the characters it keeps.
+func sliceVisible(s string, from, width int) string {
+	var sb strings.Builder
+	col := 0
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			// Copy the whole escape sequence: it costs no columns.
+			j := i + 1
+			for j < len(s) && !isEscapeEnd(s[j]) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			sb.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if col >= from && col < from+width {
+			sb.WriteRune(r)
+		}
+		col++
+		i += size
+	}
+	return sb.String()
+}
+
+func isEscapeEnd(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // where describes the scroll position for the status bar.

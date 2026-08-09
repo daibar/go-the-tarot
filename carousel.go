@@ -35,7 +35,7 @@ func runCarousel(u *ui, ordered bool) {
 				return Position{}
 			}
 			p := place(u.deck, card, nil)
-			p.Name = fmt.Sprintf("Draw %d", len(shown)+1)
+			p.Draw = len(shown) + 1
 			return p
 		}
 		if len(shown) > 0 {
@@ -47,7 +47,6 @@ func runCarousel(u *ui, ordered bool) {
 			return Position{}
 		}
 		p := place(u.deck, u.deck.reversed(card, reversed), nil)
-		p.Name = row.label
 		return p
 	}
 
@@ -75,7 +74,7 @@ func runCarousel(u *ui, ordered bool) {
 			return
 		}
 		top = u.t.paint(pageLines(p, opts), top, func(top, maxTop int) string {
-			return carouselStatus(at+1, len(shown), dwell, paused, reversed, ordered, top, maxTop)
+			return carouselStatus(at+1, len(shown), dwell, paused, reversed && ordered, opts.bare, top, maxTop)
 		})
 
 		wait := time.Until(deadline)
@@ -117,11 +116,15 @@ func runCarousel(u *ui, ordered bool) {
 			deadline = time.Now().Add(dwell) // the essay does not eat the clock
 		case "w":
 			opts.detail = !opts.detail
+		case "t":
+			// Strip it back to the picture alone, or put the words back.
+			opts.bare = !opts.bare
+			top = 0
 		case "r":
 			if ordered {
 				reversed = !reversed
 				shown[at] = place(u.deck, u.deck.reversed(p.Card, reversed), nil)
-				shown[at].Name = p.Name
+				shown[at].Label = p.Label
 			}
 		case "+", "=":
 			dwell += dwellStep
@@ -139,16 +142,19 @@ func runCarousel(u *ui, ordered bool) {
 
 // carouselStatus is the bottom bar: where you are, how fast it is going, and
 // what the keys do.
-func carouselStatus(n, total int, dwell time.Duration, paused, reversed, ordered bool, top, maxTop int) string {
+func carouselStatus(n, total int, dwell time.Duration, paused, reversed, bare bool, top, maxTop int) string {
 	pace := fmt.Sprintf("%ds", int(dwell.Seconds()))
 	if paused {
 		pace = "paused"
 	}
 	var extra string
-	if reversed && ordered {
-		extra = " · reversed"
+	if reversed {
+		extra += " · reversed"
 	}
-	return fmt.Sprintf(" %d/%d · %s%s · %s · space pause · +/- pace · m mindful · q quit",
+	if bare {
+		extra += " · picture only"
+	}
+	return fmt.Sprintf(" %d/%d · %s%s · %s · space pause · +/- pace · t text · m mindful · q quit",
 		n, total, pace, extra, where(top, maxTop))
 }
 
