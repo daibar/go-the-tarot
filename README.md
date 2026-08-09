@@ -46,7 +46,8 @@ command line.
 | `carousel` | cards turn over on their own on a timer, in order or drawn at random |
 
 Spreads deal the cards, walk you through them one at a time, then offer a review
-menu where you can revisit any card by number, export with `x`, or quit with `q`.
+menu where you can revisit any card by number, export with `x`, or press `q` to
+return to the main menu.
 
 The three card reading is Mirror, Oracle, Talisman: what the matter reflects
 back at you, what it is telling you, and what to carry out of it.
@@ -121,13 +122,19 @@ While a card is up:
 | `t` | hide the words and the drawing, leaving the picture alone — it stays that way until you press it again |
 | `m` | the mindful reading — the full contemplative essay for that card |
 | `w` | toggle Waite's 1911 divinatory meaning |
-| `q` | quit |
+| `e` | take a look at this card in explore mode, then come straight back to the reading, right where it left off |
+| `q` | back out to the main menu; from the menu itself, `q` quits |
 
 In explore mode the arrows steer the outline: `↑`/`↓` move, `→` opens a card or
 unfolds a section, `←` folds the section away, and `r` turns the card reversed.
-`/` searches the deck by name — `n` and `N` walk the matches, and jumping to one
+`/` searches the deck by name as you type, jumping to the first match after
+every keystroke — `Esc` cancels back to where the search started, `Enter`
+keeps wherever it landed, and `n`/`N` repeat it afterward. Jumping to a match
 unfolds whatever section was hiding it. Inside a card, `→` and `←` step to the
-next and previous card, and `backspace` goes back to the outline.
+next and previous card, and `o` is the only way back to the outline. Opened
+with `e` from a reading, `backspace` skips the outline entirely and jumps
+straight back to the reading — from the card view or the outline alike —
+right where it left off.
 
 Piped input still works: without a terminal the program falls back to reading
 whole lines, so `printf 'j\nq\n' | ./tarot ...` drives it the same way.

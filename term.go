@@ -311,3 +311,39 @@ func (t *term) askLine(prompt string) (string, bool) {
 		}
 	}
 }
+
+// askText is askLine for free text — a query someone typed, say — where
+// lowercasing the answer the way askLine does would mangle it.
+func (t *term) askText(prompt string) (string, bool) {
+	t.print(prompt)
+	if !t.raw {
+		line, err := t.in.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if err != nil && line == "" {
+			return "", false
+		}
+		t.print("\n")
+		return line, true
+	}
+	var sb strings.Builder
+	for {
+		k, ok := t.key()
+		if !ok {
+			return "", false
+		}
+		switch {
+		case k == keyEnter:
+			t.print("\n")
+			return strings.TrimSpace(sb.String()), true
+		case k == keyBksp:
+			if s := sb.String(); s != "" {
+				sb.Reset()
+				sb.WriteString(s[:len(s)-1])
+				fmt.Print("\b \b")
+			}
+		case len([]rune(k)) == 1:
+			sb.WriteString(k)
+			fmt.Print(k)
+		}
+	}
+}

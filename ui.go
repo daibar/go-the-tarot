@@ -48,13 +48,15 @@ func spreadNames() string {
 }
 
 // plan is what the reader settled on: which mode, and for the carousel, how it
-// draws and how long each card stays up. reversals is set only when the reader
-// was asked; otherwise the flag stands.
+// draws and how long each card stays up. reversals and query are set only when
+// the reader was asked; otherwise the flag, or whatever query is already
+// running, stands.
 type plan struct {
 	mode      mode
 	ordered   bool
 	dwell     time.Duration
 	reversals *bool
+	query     *string
 }
 
 // ui carries everything the interactive loops need.
@@ -85,11 +87,32 @@ func chooseMode(u *ui) (plan, bool) {
 	// so there is nothing to ask about there.
 	p := plan{mode: m}
 	if _, spread := spreads[string(m)]; spread || m == modeFreeform {
+		if p.query, ok = askQuery(u); !ok {
+			return plan{}, false
+		}
 		if p.reversals, ok = askReversals(u); !ok {
 			return plan{}, false
 		}
 	}
 	return p, true
+}
+
+// askQuery asks what a new reading is about, defaulting to whatever query is
+// already set (from the command line, or an earlier reading this session) so
+// pressing Enter alone keeps it.
+func askQuery(u *ui) (*string, bool) {
+	prompt := " What's your question, if any? (blank for none): "
+	if u.query != "" {
+		prompt = fmt.Sprintf(" What's your question? [%s]: ", u.query)
+	}
+	answer, ok := u.t.askText(prompt)
+	if !ok || answer == keyQuit {
+		return nil, false
+	}
+	if answer == "" {
+		answer = u.query
+	}
+	return &answer, true
 }
 
 // askReversals asks whether cards may come up reversed, defaulting to whatever
@@ -174,6 +197,10 @@ func (u *ui) showCard(p Position, r *Reading, hints string) bool {
 			if r != nil && !u.showTableau(r) {
 				return false
 			}
+		case "e":
+			if !u.exploreFrom(p) {
+				return false
+			}
 		case "t":
 			// Strip the card back to its picture, or put the words back. It
 			// stays that way until it is turned back on.
@@ -200,7 +227,7 @@ func (u *ui) showTableau(r *Reading) bool {
 		if !isCard {
 			return true
 		}
-		if !u.showCard(r.Positions[i], nil, "enter back to the layout · m mindful · w Waite · q quit") {
+		if !u.showCard(r.Positions[i], nil, "enter back to the layout · m mindful · w Waite · e explore · q quit") {
 			return false
 		}
 	}
@@ -256,9 +283,9 @@ func runSpread(u *ui, s *Spread) *Reading {
 		u.t.print("Beginning reading\n")
 	}
 	u.t.print("\n" + header(r))
-	hints := "enter next · a layout · t text · m mindful · w Waite · q quit"
+	hints := "enter next · a layout · t text · m mindful · w Waite · e explore · q quit"
 	if !hasLayout(s) {
-		hints = "enter next · t text · m mindful · w Waite · q quit"
+		hints = "enter next · t text · m mindful · w Waite · e explore · q quit"
 	}
 	for _, p := range r.Positions {
 		if !u.showCard(p, r, hints) {
@@ -311,7 +338,7 @@ func review(u *ui, r *Reading) {
 				u.t.print(" Pick a card number, x, or q.\n")
 				continue
 			}
-			if !u.showCard(r.Positions[n-1], r, "enter back to the review · a layout · m mindful · q quit") {
+			if !u.showCard(r.Positions[n-1], r, "enter back to the review · a layout · m mindful · e explore · q quit") {
 				return
 			}
 		}
@@ -344,7 +371,7 @@ func runFreeform(u *ui) *Reading {
 			p := place(u.deck, card, nil)
 			p.Draw = len(r.Positions) + 1
 			r.Positions = append(r.Positions, p)
-			if !u.showCard(p, nil, "enter back to the pile · t text · m mindful · q quit") {
+			if !u.showCard(p, nil, "enter back to the pile · t text · m mindful · e explore · q quit") {
 				return r
 			}
 		case "l":
@@ -361,7 +388,7 @@ func runFreeform(u *ui) *Reading {
 			return r
 		default:
 			if n, err := strconv.Atoi(key); err == nil && n >= 1 && n <= len(r.Positions) {
-				if !u.showCard(r.Positions[n-1], nil, "enter back to the pile · t text · m mindful · q quit") {
+				if !u.showCard(r.Positions[n-1], nil, "enter back to the pile · t text · m mindful · e explore · q quit") {
 					return r
 				}
 				continue

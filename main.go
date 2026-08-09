@@ -157,19 +157,37 @@ func run(modeFlag string, opts options, f runFlags) error {
 		opts.height = min(max(t.rows-6, 8), maxArtHeight)
 	}
 
+	base := opts
 	u := &ui{t: t, deck: deck, pile: pile, opts: opts, query: f.query}
 
 	p, err := pickMode(u, modeFlag, f)
 	if err != nil {
 		return err
 	}
-	if p.mode == "" {
-		return nil // the reader quit at the menu
-	}
-	if p.reversals != nil {
-		pile.reversals = *p.reversals
-	}
+	// Quitting out of a mode lands back here at the menu, rather than ending
+	// the program; only quitting the menu itself does that.
+	for p.mode != "" {
+		if p.reversals != nil {
+			pile.reversals = *p.reversals
+		}
+		if p.query != nil {
+			u.query = *p.query
+		}
+		runMode(u, p, base)
 
+		var ok bool
+		p, ok = chooseMode(u)
+		if !ok {
+			return nil // the reader quit at the menu
+		}
+	}
+	return nil
+}
+
+// runMode dispatches to the chosen mode's loop, starting from the base options
+// so a previous mode's toggles (bare, detail) don't leak into the next.
+func runMode(u *ui, p plan, base options) {
+	u.opts = base
 	switch p.mode {
 	case modeCarousel:
 		u.opts.dwell = p.dwell
@@ -183,7 +201,6 @@ func run(modeFlag string, opts options, f runFlags) error {
 	default:
 		runSpread(u, spreads[string(p.mode)])
 	}
-	return nil
 }
 
 // restoreOnSignal puts the terminal back the way it was if we are killed.

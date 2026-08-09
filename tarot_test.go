@@ -286,8 +286,11 @@ func TestGuideOutlineMatchesTheDeck(t *testing.T) {
 func TestOutlineFoldingAndCursor(t *testing.T) {
 	deck := testDeck(t)
 	o := newOutline(deck.guide)
-	if len(o.rows) != deckSize+len(deck.guide.Sections) {
-		t.Fatalf("outline has %d rows, want %d", len(o.rows), deckSize+len(deck.guide.Sections))
+	// One heading per guide section, plus the synthetic Minor Arcana heading
+	// that groups the four suits.
+	wantRows := deckSize + len(deck.guide.Sections) + 1
+	if len(o.rows) != wantRows {
+		t.Fatalf("outline has %d rows, want %d", len(o.rows), wantRows)
 	}
 	if !o.rows[0].heading {
 		t.Error("the outline should open with a section heading")
@@ -313,6 +316,54 @@ func TestOutlineFoldingAndCursor(t *testing.T) {
 	o.move(1000)
 	if o.cursor != len(o.rows)-1 {
 		t.Errorf("cursor = %d after moving past the end, want %d", o.cursor, len(o.rows)-1)
+	}
+}
+
+func TestMinorArcanaGroupsTheSuits(t *testing.T) {
+	deck := testDeck(t)
+	o := newOutline(deck.guide)
+
+	minorGroup := -1
+	suitHeadings := 0
+	for _, r := range o.rows {
+		if r.heading && r.label == "Minor Arcana (Pips & Courts)" {
+			minorGroup = r.section
+		}
+		if r.heading && strings.HasPrefix(r.label, "Suit of ") {
+			suitHeadings++
+			if r.parent != r.section && r.parent < 0 {
+				t.Errorf("suit heading %q has no parent group", r.label)
+			}
+		}
+	}
+	if minorGroup < 0 {
+		t.Fatal("no synthetic Minor Arcana heading in the outline")
+	}
+	if suitHeadings != 4 {
+		t.Errorf("found %d suit headings, want 4", suitHeadings)
+	}
+
+	// Folding Minor Arcana hides every suit heading and every suit card —
+	// only the Major Arcana's own heading and 22 cards remain, alongside the
+	// Minor Arcana heading itself.
+	o.collapsed[minorGroup] = true
+	vis := o.visible()
+	if want := 1 + 22 + 1; len(vis) != want {
+		t.Errorf("outline with Minor Arcana folded shows %d rows, want %d", len(vis), want)
+	}
+
+	// Jumping to a card inside a folded suit unfolds both the suit and the
+	// Minor Arcana heading over it.
+	i := o.indexOf("Ace of Wands")
+	if i < 0 {
+		t.Fatal("Ace of Wands not found in the outline")
+	}
+	o.jump(i)
+	if o.collapsed[minorGroup] {
+		t.Error("jumping into a suit should unfold the Minor Arcana heading over it")
+	}
+	if o.cursor != i {
+		t.Errorf("cursor = %d after jump, want %d", o.cursor, i)
 	}
 }
 
@@ -592,9 +643,10 @@ func menuKey(m mode) string {
 
 func TestReversalsChoiceReachesThePile(t *testing.T) {
 	deck := testDeck(t)
-	// The picker path: free form, then "n" to the reversed cards question.
+	// The picker path: free form, a blank query, then "n" to the reversed
+	// cards question.
 	u := &ui{
-		t:    &term{in: bufio.NewReader(strings.NewReader(menuKey(modeFreeform) + "\nn\n"))},
+		t:    &term{in: bufio.NewReader(strings.NewReader(menuKey(modeFreeform) + "\n\nn\n"))},
 		deck: deck,
 		pile: newPile(deck, rand.New(rand.NewSource(1)), true),
 	}
@@ -667,6 +719,43 @@ func TestOutlineSearch(t *testing.T) {
 	o.jump(i)
 	if o.collapsed[0] || o.cursor != i {
 		t.Errorf("jump left the section folded (cursor=%d, folded=%v)", o.cursor, o.collapsed[0])
+	}
+}
+
+func TestSearchOutlineIsIncremental(t *testing.T) {
+	deck := testDeck(t)
+
+	// Typing "tower" one letter at a time lands on it without an Enter; the
+	// query comes back for n/N to repeat.
+	u := &ui{t: &term{in: bufio.NewReader(strings.NewReader("tower\r")), raw: true, rows: 24, cols: 80}}
+	o := newOutline(deck.guide)
+	q, found, canceled, ok := searchOutline(u, o)
+	if !ok || canceled || !found || q != "tower" {
+		t.Fatalf("searchOutline = %q found=%v canceled=%v ok=%v", q, found, canceled, ok)
+	}
+	if o.rows[o.cursor].label != "16. The Tower" {
+		t.Errorf("cursor landed on %q, want The Tower", o.rows[o.cursor].label)
+	}
+
+	// Esc cancels back to wherever the cursor started.
+	start := 5
+	o.cursor = start
+	u.t = &term{in: bufio.NewReader(strings.NewReader("fool\x1b")), raw: true, rows: 24, cols: 80}
+	if _, _, canceled, ok := searchOutline(u, o); !ok || !canceled {
+		t.Errorf("esc should cancel, got canceled=%v ok=%v", canceled, ok)
+	}
+	if o.cursor != start {
+		t.Errorf("cursor after cancel = %d, want back at %d", o.cursor, start)
+	}
+
+	// Backspace un-types a letter and the search moves back with it.
+	o.cursor = 0
+	u.t = &term{in: bufio.NewReader(strings.NewReader("fooler\x7f\x7f\r")), raw: true, rows: 24, cols: 80}
+	if q, found, _, ok := searchOutline(u, o); !ok || !found || q != "fool" {
+		t.Fatalf("searchOutline after backspacing = %q found=%v ok=%v", q, found, ok)
+	}
+	if got := o.rows[o.cursor].label; got != "0. The Fool" {
+		t.Errorf("cursor landed on %q, want The Fool", got)
 	}
 }
 
@@ -885,7 +974,7 @@ func TestEveryShuffledModeAsksAboutReversals(t *testing.T) {
 	// Celtic cross, three card and free form all deal off a shuffled pile.
 	for _, m := range []mode{modeCeltic, "three", modeFreeform} {
 		u := &ui{
-			t:    &term{in: bufio.NewReader(strings.NewReader(menuKey(m) + "\nn\n"))},
+			t:    &term{in: bufio.NewReader(strings.NewReader(menuKey(m) + "\n\nn\n"))},
 			deck: deck,
 			pile: newPile(deck, rand.New(rand.NewSource(1)), true),
 		}
