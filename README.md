@@ -17,7 +17,7 @@ directed and reviewed by a human. See [How this was written](#how-this-was-writt
 
 ## Build
 
-    go build -o tarot .
+    go build -o gtarot .
 
 Requires Go 1.22+. No modules to download.
 
@@ -25,14 +25,15 @@ Requires Go 1.22+. No modules to download.
 
     make install
 
-Builds the binary and installs it to `/usr/local/bin/tarot`. Override the
-prefix with `make install PREFIX=$HOME/.local` to install elsewhere (the
-binary lands in `$PREFIX/bin`). `make uninstall` removes it, and `make clean`
-removes the local build artifact.
+Builds the binary and installs it to `~/.local/bin/gtarot` — no sudo needed.
+Make sure `~/.local/bin` is on your `PATH`. Override the prefix, e.g.
+`make install PREFIX=/usr/local` for a system-wide install (may need `sudo`).
+`make uninstall` removes it, and `make clean` removes the local build
+artifact.
 
 ## Usage
 
-    ./tarot [flags] [your question here]
+    ./gtarot [flags] [your question here]
 
 Any words you pass are your query; they are folded into the random seed, so
 asking the same question at a different moment still gives a different reading.
@@ -146,7 +147,7 @@ straight back to the reading — from the card view or the outline alike —
 right where it left off.
 
 Piped input still works: without a terminal the program falls back to reading
-whole lines, so `printf 'j\nq\n' | ./tarot ...` drives it the same way.
+whole lines, so `printf 'j\nq\n' | ./gtarot ...` drives it the same way.
 
 ### The carousel
 
@@ -184,16 +185,16 @@ back.
 
 Examples:
 
-    ./tarot                                      # pick a mode, then ask your question
-    ./tarot -mode three should I take the job
-    ./tarot -mode celtic -layout                 # straight to the whole tableau
-    ./tarot -mode carousel -random -dwell 30     # a random card every 30 seconds
-    ./tarot -mode explore                        # browse the deck by section
-    ./tarot -mode carousel -dwell 90             # a card every 90 seconds, in order
-    ./tarot -mode freeform -dwell 60             # a random card every minute
-    ./tarot -mode freeform -no-reversals         # keep pulling, all upright
-    ./tarot -no-fancy -no-color what now         # quick text-only Celtic cross
-    ./tarot -notes ~/notes/tarot.md -mode three  # read the guide live off disk
+    ./gtarot                                      # pick a mode, then ask your question
+    ./gtarot -mode three should I take the job
+    ./gtarot -mode celtic -layout                 # straight to the whole tableau
+    ./gtarot -mode carousel -random -dwell 30     # a random card every 30 seconds
+    ./gtarot -mode explore                        # browse the deck by section
+    ./gtarot -mode carousel -dwell 90             # a card every 90 seconds, in order
+    ./gtarot -mode freeform -dwell 60             # a random card every minute
+    ./gtarot -mode freeform -no-reversals         # keep pulling, all upright
+    ./gtarot -no-fancy -no-color what now         # quick text-only Celtic cross
+    ./gtarot -notes ~/notes/tarot.md -mode three  # read the guide live off disk
 
 ## The card guide
 

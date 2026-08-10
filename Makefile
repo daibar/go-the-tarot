@@ -1,5 +1,5 @@
-BINARY := tarot
-PREFIX ?= /usr/local
+BINARY := gtarot
+PREFIX ?= $(HOME)/.local
 BINDIR := $(PREFIX)/bin
 
 .PHONY: build install uninstall test clean
