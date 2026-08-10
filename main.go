@@ -43,6 +43,7 @@ func main() {
 		seed        = flag.Int64("seed", 0, "fixed random seed, for reproducible readings (0 = derive from query and clock)")
 		export      = flag.Bool("export", false, "write the reading to ~/tarot_reading_DATE.txt and exit")
 		notesPath   = flag.String("notes", "", "path to a card guide markdown file (default: the embedded copy of tarot.md)")
+		card        = flag.Bool("card", false, "draw one random card, print it small with no text, and exit")
 	)
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -61,6 +62,7 @@ Every mode and option can be reached from the command line, without the menu:
   %[1]s -mode carousel -dwell 90          a card every 90 seconds, in order
   %[1]s -mode carousel -random -dwell 30  ... drawn at random instead
   %[1]s -mode explore -art sketch         browse the deck as line drawings
+  %[1]s -card                             one card, no words, straight to the console
 `, filepath.Base(os.Args[0]))
 	}
 	flag.Parse()
@@ -82,6 +84,7 @@ Every mode and option can be reached from the command line, without the menu:
 		export:      *export,
 		notesPath:   *notesPath,
 		noFancyMode: *noFancy,
+		card:        *card,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "tarot:", err)
 		os.Exit(1)
@@ -96,6 +99,7 @@ type runFlags struct {
 	export      bool
 	notesPath   string
 	noFancyMode bool
+	card        bool
 }
 
 func run(modeFlag string, opts options, f runFlags) error {
@@ -111,6 +115,20 @@ func run(modeFlag string, opts options, f runFlags) error {
 	deck, err := loadDeck(f.notesPath)
 	if err != nil {
 		return err
+	}
+	// A single ad-hoc card needs no spread, no terminal, and no words.
+	if f.card {
+		rng := rand.New(rand.NewSource(seedFrom(f.seed, f.query)))
+		c, _ := newPile(deck, rng, f.reversals).Draw()
+		if opts.height <= 0 {
+			opts.height = cardArtHeight
+		}
+		rendered, err := renderCard(c, opts.height, opts.color)
+		if err != nil {
+			return err
+		}
+		fmt.Print(rendered)
+		return nil
 	}
 	if opts.noFancy || f.export {
 		if opts.height <= 0 {

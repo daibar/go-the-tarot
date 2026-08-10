@@ -7,11 +7,12 @@ import (
 )
 
 const (
-	wrapWidth    = 65 // widest the prose ever wraps
-	minTextWidth = 34 // narrower than this and the words go under the picture
-	defaultCols  = 80
-	maxArtHeight = 24 // the picture never grows past this, however tall the terminal
-	artGap       = 2  // columns between the picture and the words
+	wrapWidth     = 65 // widest the prose ever wraps
+	minTextWidth  = 34 // narrower than this and the words go under the picture
+	defaultCols   = 80
+	maxArtHeight  = 24 // the picture never grows past this, however tall the terminal
+	cardArtHeight = 10 // -card's thumbnail: big enough to read, small enough to sit on a few lines
+	artGap        = 2  // columns between the picture and the words
 )
 
 const divider = " *****************************************************************"

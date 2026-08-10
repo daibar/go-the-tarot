@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math/rand"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -415,6 +417,33 @@ func TestBareHidesTheWordsAndTheName(t *testing.T) {
 	}
 	if !strings.Contains(bare, divider) || len(strings.Split(bare, "\n")) < 8 {
 		t.Error("picture-only page should still show the picture")
+	}
+}
+
+func TestCardFlagPrintsPictureOnlyAndExits(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+
+	runErr := run("", options{art: artPhoto, color: false}, runFlags{card: true, seed: 1})
+	w.Close()
+	os.Stdout = old
+	if runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+
+	out, _ := io.ReadAll(r)
+	got := string(out)
+	for _, gone := range []string{"Drawing card number", divider, "Upright:", "Reversed:", "Waite (1911)"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("-card output still shows %q", gone)
+		}
+	}
+	if lines := strings.Split(strings.TrimRight(got, "\n"), "\n"); len(lines) != cardArtHeight {
+		t.Errorf("-card printed %d lines, want %d", len(lines), cardArtHeight)
 	}
 }
 
