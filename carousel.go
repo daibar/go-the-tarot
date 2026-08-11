@@ -85,9 +85,13 @@ func runCarousel(u *ui, ordered bool) {
 		if paused {
 			wait = 0 // wait on the keyboard alone
 		}
-		key, ok, timedOut := u.t.keyWithin(wait)
+		key, ok, timedOut, resized := u.t.keyWithin(wait)
 		if !ok {
 			return
+		}
+		if resized {
+			opts.cols, opts.rows = u.t.cols, u.t.rows
+			continue
 		}
 		if timedOut {
 			advance()
@@ -119,6 +123,11 @@ func runCarousel(u *ui, ordered bool) {
 		case "t":
 			// Strip it back to the picture alone, or put the words back.
 			opts.bare = !opts.bare
+			top = 0
+		case "z":
+			// Blow the picture up to fill the window, or put it back to its
+			// usual size.
+			opts.full = !opts.full
 			top = 0
 		case "r":
 			if ordered {
@@ -154,7 +163,7 @@ func carouselStatus(n, total int, dwell time.Duration, paused, reversed, bare bo
 	if bare {
 		extra += " · picture only"
 	}
-	return fmt.Sprintf(" %d/%d · %s%s · %s · space pause · +/- pace · t text · m mindful · q quit",
+	return fmt.Sprintf(" %d/%d · %s%s · %s · space pause · +/- pace · t text · z fullscreen · m mindful · q quit",
 		n, total, pace, extra, where(top, maxTop))
 }
 

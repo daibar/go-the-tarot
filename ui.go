@@ -177,12 +177,19 @@ func chooseCarousel(u *ui) (plan, bool) {
 	}
 }
 
+// syncSize refreshes the options a page's layout depends on to match the
+// terminal's current size, so a resize is reflected the moment the card
+// redraws rather than staying laid out for whatever pane it was opened in.
+func (u *ui) syncSize() {
+	u.opts.cols, u.opts.rows = u.t.cols, u.t.rows
+}
+
 // showCard puts a card up and handles the keys available while it is there. r
 // may be nil; when it is a laid out spread, "a" shows the whole tableau. It
 // returns false when the reader wants out.
 func (u *ui) showCard(p Position, r *Reading, hints string) bool {
 	for {
-		key, ok := u.t.view(page(p, u.opts), hints)
+		key, ok := u.t.view(func() string { u.syncSize(); return page(p, u.opts) }, hints)
 		if !ok || key == keyQuit {
 			return false
 		}
@@ -207,6 +214,10 @@ func (u *ui) showCard(p Position, r *Reading, hints string) bool {
 			u.opts.bare = !u.opts.bare
 		case "w":
 			u.opts.detail = !u.opts.detail
+		case "z":
+			// Blow the picture up to fill the window, or put it back to its
+			// usual size. It stays that way until it is turned back off.
+			u.opts.full = !u.opts.full
 		}
 	}
 }
@@ -219,7 +230,7 @@ func (u *ui) showTableau(r *Reading) bool {
 	}
 	hints := fmt.Sprintf("%s open a card · esc back", cardKeys(len(r.Positions)))
 	for {
-		key, ok := u.t.viewScroll(tableau(r, u.opts), hints, true)
+		key, ok := u.t.viewScroll(func() string { u.syncSize(); return tableau(r, u.opts) }, hints, true)
 		if !ok || key == keyQuit {
 			return false
 		}
@@ -227,7 +238,7 @@ func (u *ui) showTableau(r *Reading) bool {
 		if !isCard {
 			return true
 		}
-		if !u.showCard(r.Positions[i], nil, "enter back to the layout · m mindful · w Waite · e explore · q quit") {
+		if !u.showCard(r.Positions[i], nil, "enter back to the layout · z fullscreen · m mindful · w Waite · e explore · q quit") {
 			return false
 		}
 	}
@@ -259,7 +270,7 @@ func cardKeys(cards int) string {
 
 // showMindful puts the contemplative essay up in its own scrollable view.
 func (u *ui) showMindful(p Position) bool {
-	key, ok := u.t.view(mindful(p), "esc/enter back to the card")
+	key, ok := u.t.view(func() string { return mindful(p) }, "esc/enter back to the card")
 	return ok && key != keyQuit
 }
 
@@ -283,9 +294,9 @@ func runSpread(u *ui, s *Spread) *Reading {
 		u.t.print("Beginning reading\n")
 	}
 	u.t.print("\n" + header(r))
-	hints := "enter next · a layout · t text · m mindful · w Waite · e explore · q quit"
+	hints := "enter next · a layout · z fullscreen · t text · m mindful · w Waite · e explore · q quit"
 	if !hasLayout(s) {
-		hints = "enter next · t text · m mindful · w Waite · e explore · q quit"
+		hints = "enter next · z fullscreen · t text · m mindful · w Waite · e explore · q quit"
 	}
 	for _, p := range r.Positions {
 		if !u.showCard(p, r, hints) {
@@ -315,6 +326,11 @@ func review(u *ui, r *Reading) {
 		if hasLayout(r.Spread) {
 			u.t.print("   a) See the whole spread laid out\n")
 		}
+		journalVerb := "Add"
+		if r.Journal != "" {
+			journalVerb = "Edit"
+		}
+		u.t.print(fmt.Sprintf("   j) %s a journal entry\n", journalVerb))
 		u.t.print("   x) Export reading and quit\n")
 		u.t.print("   q) Just quit\n")
 
@@ -329,6 +345,18 @@ func review(u *ui, r *Reading) {
 			if !u.showTableau(r) {
 				return
 			}
+		case "j":
+			prompt := " Journal entry (blank for none, ctrl-e for your editor): "
+			if r.Journal != "" {
+				prompt = fmt.Sprintf(" Journal entry [%s] (ctrl-e for your editor): ", r.Journal)
+			}
+			entry, ok := u.t.askText(prompt)
+			if !ok {
+				return
+			}
+			if entry != "" {
+				r.Journal = entry
+			}
 		case "x":
 			u.export(r)
 			return
@@ -338,7 +366,7 @@ func review(u *ui, r *Reading) {
 				u.t.print(" Pick a card number, x, or q.\n")
 				continue
 			}
-			if !u.showCard(r.Positions[n-1], r, "enter back to the review · a layout · m mindful · e explore · q quit") {
+			if !u.showCard(r.Positions[n-1], r, "enter back to the review · a layout · z fullscreen · m mindful · e explore · q quit") {
 				return
 			}
 		}
@@ -354,7 +382,10 @@ func runFreeform(u *ui) *Reading {
 
 	for {
 		u.t.print(fmt.Sprintf("\n [enter] draw (%d left in the pile) · l list · x export · q quit: ", u.pile.Remaining()))
-		key, ok := u.t.key()
+		key, ok, resized := u.t.keyOrResize()
+		if resized {
+			continue
+		}
 		u.t.print("\n")
 		if !ok || key == keyQuit {
 			return r
@@ -371,7 +402,7 @@ func runFreeform(u *ui) *Reading {
 			p := place(u.deck, card, nil)
 			p.Draw = len(r.Positions) + 1
 			r.Positions = append(r.Positions, p)
-			if !u.showCard(p, nil, "enter back to the pile · t text · m mindful · e explore · q quit") {
+			if !u.showCard(p, nil, "enter back to the pile · z fullscreen · t text · m mindful · e explore · q quit") {
 				return r
 			}
 		case "l":
@@ -388,7 +419,7 @@ func runFreeform(u *ui) *Reading {
 			return r
 		default:
 			if n, err := strconv.Atoi(key); err == nil && n >= 1 && n <= len(r.Positions) {
-				if !u.showCard(r.Positions[n-1], nil, "enter back to the pile · t text · m mindful · e explore · q quit") {
+				if !u.showCard(r.Positions[n-1], nil, "enter back to the pile · z fullscreen · t text · m mindful · e explore · q quit") {
 					return r
 				}
 				continue
@@ -403,7 +434,17 @@ func (u *ui) export(r *Reading) {
 		u.t.print(" Nothing drawn yet, so there is nothing to export.\n")
 		return
 	}
-	path, err := exportReading(r, u.opts)
+	opts := u.opts
+	if opts.color {
+		// A plain text editor renders the picture's color codes as garbled
+		// escape sequences rather than color, so the file defaults to none.
+		answer, ok := u.t.askKey(" Keep the color in the exported file? Some text editors show it as garbled escape codes instead. [y/N]: ")
+		if !ok {
+			return
+		}
+		opts.color = answer == "y" || answer == "yes"
+	}
+	path, err := exportReading(r, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tarot:", err)
 		return

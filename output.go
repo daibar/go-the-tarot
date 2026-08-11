@@ -176,9 +176,34 @@ func para(text string, width int) string {
 	return wrap(text, width) + "\n\n"
 }
 
+// fullHeight is the tallest a single card picture can be without spilling
+// past the terminal in either direction — the z key's fullscreen view, so a
+// card can fill the window on the spot instead of the reader having to widen
+// their tmux pane to see any more of it.
+func fullHeight(cols, rows int) int {
+	if cols <= 0 {
+		cols = defaultCols
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	// A card picture is about 1.14 columns wide per row of height, the same
+	// ratio cellHeight uses to size the tableau's grid.
+	byWidth := int(float64(cols-2) / 1.14)
+	byHeight := rows - 3 // the heading and the status bar
+	return max(min(byWidth, byHeight), minCellArt)
+}
+
 // page lays a card out: the deck scan on the left, and the guide's drawing with
 // the words beneath it on the right, so a whole card fits on one screen.
 func page(p Position, opts options) string {
+	if opts.full {
+		// Fullscreen only ever grows the picture: a -height flag (or a
+		// smaller terminal than the one the height was fit to) may already
+		// call for something taller than fits in the window, and z should
+		// not shrink that back down.
+		opts.height = max(opts.height, fullHeight(opts.cols, opts.rows))
+	}
 	photo := photoLines(p, opts)
 	cols := opts.cols
 	if cols <= 0 {
@@ -277,10 +302,34 @@ func header(r *Reading) string {
 	return sb.String()
 }
 
-// plain is the whole reading as text: the "no fancy" output and the export.
+// plain is the whole reading as text: the "-no-fancy" output.
 func plain(r *Reading, opts options) string {
 	var sb strings.Builder
 	sb.WriteString(header(r))
+	for _, p := range r.Positions {
+		sb.WriteString(page(p, opts))
+	}
+	return sb.String()
+}
+
+// journalBlock is the reader's own note about the reading, wrapped like any
+// other paragraph, or nothing if they never added one.
+func journalBlock(r *Reading) string {
+	return block("Journal:", r.Journal)
+}
+
+// exportBody is what goes to the exported file: the header, then whatever the
+// reader wrote down about the reading, then the whole spread laid out (if it
+// has a layout), then each card the way page() already shows it — more
+// context than the interactive walkthrough gives on its own, since there is
+// no keyboard in a file to open the tableau or type a note later.
+func exportBody(r *Reading, opts options) string {
+	var sb strings.Builder
+	sb.WriteString(header(r))
+	sb.WriteString(journalBlock(r))
+	if hasLayout(r.Spread) {
+		sb.WriteString(tableauGrid(r, opts))
+	}
 	for _, p := range r.Positions {
 		sb.WriteString(page(p, opts))
 	}

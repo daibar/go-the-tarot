@@ -54,7 +54,10 @@ func (t *term) menu(title string, items []menuItem, hints string) (int, bool) {
 		t.print("  q) Quit\n")
 		t.statusBar(" " + hints)
 
-		key, ok := t.key()
+		key, ok, resized := t.keyOrResize()
+		if resized {
+			continue
+		}
 		if !ok || key == keyQuit || key == keyEsc {
 			return 0, false
 		}

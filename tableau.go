@@ -53,6 +53,13 @@ func tableau(r *Reading, opts options) string {
 	if !hasLayout(r.Spread) {
 		return " That reading has no layout to show.\n"
 	}
+	return header(r) + tableauGrid(r, opts)
+}
+
+// tableauGrid is the grid alone, with no header: the export builds its own
+// header once for the whole file, ahead of the journal entry and the layout
+// alike, so the two never print one twice between them.
+func tableauGrid(r *Reading, opts options) string {
 	places := layouts[r.Spread.Key]
 
 	rows, cols := 0, 0
@@ -71,7 +78,6 @@ func tableau(r *Reading, opts options) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(header(r))
 	for row := range rows {
 		// Every column takes the same width whether or not a card sits there,
 		// so the cross keeps its shape around the empty middle.

@@ -645,16 +645,16 @@ func TestKeyWithinTimesOut(t *testing.T) {
 	// Nothing to read: the wait ends on the clock, and input is still open.
 	tr := &term{in: bufio.NewReader(&blockingReader{})}
 	start := time.Now()
-	if key, ok, timedOut := tr.keyWithin(40 * time.Millisecond); !timedOut || !ok || key != "" {
-		t.Errorf("keyWithin = %q/%v/%v, want a timeout", key, ok, timedOut)
+	if key, ok, timedOut, resized := tr.keyWithin(40 * time.Millisecond); !timedOut || !ok || key != "" || resized {
+		t.Errorf("keyWithin = %q/%v/%v/%v, want a timeout", key, ok, timedOut, resized)
 	}
 	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
 		t.Errorf("returned after %s, want to have waited", elapsed)
 	}
 	// A key that is already there comes back without waiting.
 	tr2 := &term{in: bufio.NewReader(strings.NewReader("j\n"))}
-	if key, ok, timedOut := tr2.keyWithin(time.Minute); key != "j" || !ok || timedOut {
-		t.Errorf("keyWithin = %q/%v/%v, want j", key, ok, timedOut)
+	if key, ok, timedOut, resized := tr2.keyWithin(time.Minute); key != "j" || !ok || timedOut || resized {
+		t.Errorf("keyWithin = %q/%v/%v/%v, want j", key, ok, timedOut, resized)
 	}
 }
 

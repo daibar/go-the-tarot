@@ -5,41 +5,58 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // Keys are reported as short names. Printable keys report themselves, so a
 // switch can read "j", "q", "up" side by side.
 const (
-	keyEnter = "enter"
-	keyEsc   = "esc"
-	keyUp    = "up"
-	keyDown  = "down"
-	keyLeft  = "left"
-	keyRight = "right"
-	keyPgUp  = "pgup"
-	keyPgDn  = "pgdn"
-	keyHome  = "home"
-	keyEnd   = "end"
-	keyBksp  = "backspace"
-	keyQuit  = "q"
+	keyEnter  = "enter"
+	keyEsc    = "esc"
+	keyUp     = "up"
+	keyDown   = "down"
+	keyLeft   = "left"
+	keyRight  = "right"
+	keyPgUp   = "pgup"
+	keyPgDn   = "pgdn"
+	keyHome   = "home"
+	keyEnd    = "end"
+	keyBksp   = "backspace"
+	keyQuit   = "q"
+	keyEditor = "editor" // ctrl-e: hand free text to $EDITOR and back
 )
 
 // term reads single keypresses from the terminal and draws full screen views.
 // When stdin is not a terminal it falls back to reading whole lines, which
 // keeps piped input and scripts working.
 type term struct {
-	in      *bufio.Reader
-	raw     bool
-	restore func()
-	rows    int
-	cols    int
+	in         *bufio.Reader
+	raw        bool
+	restore    func()
+	rows       int
+	cols       int
+	savedState string // stty -g output, for leaving raw mode exactly the way it was found
 
 	// Keys are pumped through a channel once something needs to wait on a
-	// clock as well as the keyboard; see keyWithin.
+	// clock, or a resize, as well as the keyboard; see startKeys.
 	keys chan string
+
+	// stopKeys and keysDone let a caller reclaim the terminal from the
+	// background reader below without leaving it mid-read: closing stopKeys
+	// asks the goroutine to give up between polls, and keysDone closes once
+	// it actually has. See suspendKeys.
+	stopKeys chan struct{}
+	keysDone chan struct{}
+
+	// resized carries one pending SIGWINCH at a time: the pane was widened or
+	// narrowed since the terminal was last measured, and whatever is on
+	// screen wants redrawing at the new size rather than sitting cut off
+	// until the next keypress.
+	resized chan struct{}
 }
 
 func newTerm() *term {
@@ -56,13 +73,52 @@ func newTerm() *term {
 		return t
 	}
 	t.raw = true
-	t.restore = func() {
-		stty(saved)
-		fmt.Print("\x1b[?25h") // show the cursor again
-	}
+	t.savedState = saved
+	t.restore = t.suspendRaw
 	fmt.Print("\x1b[?25l")
 	t.size()
+	t.watchResize()
 	return t
+}
+
+// suspendRaw puts the terminal back the way it was found before raw mode,
+// and shows the cursor again — used both to close down for good and, with
+// resumeRaw, to hand the terminal to a subprocess (an editor) temporarily.
+func (t *term) suspendRaw() {
+	stty(t.savedState)
+	fmt.Print("\x1b[?25h")
+}
+
+// resumeRaw re-enters raw mode after suspendRaw, once a subprocess that
+// borrowed the terminal has given it back.
+func (t *term) resumeRaw() {
+	stty("raw", "-echo")
+	fmt.Print("\x1b[?25l")
+}
+
+// watchResize notes every SIGWINCH so a wait for a keypress can notice the
+// terminal changed shape and hand back control to redraw, without treating
+// the resize itself as a keypress.
+func (t *term) watchResize() {
+	t.resized = make(chan struct{}, 1)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGWINCH)
+	go func() {
+		// A panic here runs on its own goroutine stack, so it would never
+		// reach main's recover and would take the whole process down
+		// silently — log it and just stop watching resizes instead.
+		defer func() {
+			if r := recover(); r != nil {
+				logCrash(r)
+			}
+		}()
+		for range sig {
+			select {
+			case t.resized <- struct{}{}:
+			default: // a redraw is already pending; one is enough
+			}
+		}
+	}()
 }
 
 func (t *term) close() {
@@ -101,71 +157,209 @@ func (t *term) size() {
 	}
 }
 
-// key waits for one keypress. The second return is false at end of input.
-func (t *term) key() (string, bool) {
+// startKeys makes sure keypresses are being read on a background goroutine,
+// so a wait can give up on the keyboard — for a clock or a resize — without
+// losing whatever key comes right after.
+func (t *term) startKeys() {
 	if t.keys != nil {
-		k, ok := <-t.keys
-		return k, ok
+		return
 	}
-	return t.readKey()
-}
-
-// keyWithin waits for a keypress, giving up after d. It reports the key, then
-// whether input is still open, then whether the wait timed out.
-func (t *term) keyWithin(d time.Duration) (string, bool, bool) {
-	if t.keys == nil {
-		// From here on every read comes off this goroutine, so that a pending
-		// read can be abandoned when the clock runs out.
-		t.keys = make(chan string, 8)
-		go func() {
-			for {
-				k, ok := t.readKey()
-				if !ok {
-					close(t.keys)
-					return
-				}
-				t.keys <- k
+	keys := make(chan string, 8)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	t.keys, t.stopKeys, t.keysDone = keys, stop, done
+	go func() {
+		defer close(done)
+		// A panic here runs on its own goroutine stack, so it would never
+		// reach main's recover and would take the whole process down
+		// silently, terminal still in raw mode. Log it and close keys
+		// instead, so every caller waiting on it sees a plain end of input
+		// and winds down the normal way, restoring the terminal as it goes.
+		defer func() {
+			if r := recover(); r != nil {
+				logCrash(r)
+				close(keys)
 			}
 		}()
+		for {
+			k, ok, stopped := t.readKey(stop)
+			if stopped {
+				return
+			}
+			if !ok {
+				close(keys)
+				return
+			}
+			select {
+			case keys <- k:
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// suspendKeys stops the background reader above, if one is running, and
+// returns a func that starts a fresh one. A subprocess that wants the
+// terminal to itself — an editor — needs this: without it, the reader stays
+// mid-read and races the subprocess for whatever the reader types next.
+func (t *term) suspendKeys() (resume func()) {
+	if t.keys == nil {
+		return t.startKeys
 	}
-	if d <= 0 {
-		k, ok := <-t.keys
+	close(t.stopKeys)
+	<-t.keysDone
+	t.keys, t.stopKeys, t.keysDone = nil, nil, nil
+	return t.startKeys
+}
+
+// key waits for one keypress. The second return is false at end of input.
+func (t *term) key() (string, bool) {
+	if !t.raw {
+		k, ok, _ := t.readKey(nil)
+		return k, ok
+	}
+	t.startKeys()
+	for {
+		select {
+		case k, ok := <-t.keys:
+			return k, ok
+		case <-t.resized:
+			t.size()
+		}
+	}
+}
+
+// keyOrResize is key, but hands back control the moment the terminal reports
+// a new size, instead of waiting for an actual keypress. The caller is
+// expected to measure whatever it drew against the (already refreshed) rows
+// and cols and paint it again, then go back to waiting: a resize is never
+// itself a keypress, so it must never reach a switch that treats every
+// unrecognised key as "go back" or "not a valid choice".
+func (t *term) keyOrResize() (key string, ok bool, resized bool) {
+	if !t.raw {
+		k, ok, _ := t.readKey(nil)
 		return k, ok, false
 	}
+	t.startKeys()
 	select {
 	case k, ok := <-t.keys:
 		return k, ok, false
-	case <-time.After(d):
+	case <-t.resized:
+		t.size()
 		return "", true, true
 	}
 }
 
-// readKey blocks on the terminal for a single keypress.
-func (t *term) readKey() (string, bool) {
-	if !t.raw {
-		return t.lineKey()
+// keyWithin waits for a keypress, giving up after d. It reports the key, then
+// whether input is still open, then whether the wait timed out, then whether
+// it gave up early because the terminal was resized (rows and cols are
+// already refreshed by the time this returns).
+func (t *term) keyWithin(d time.Duration) (key string, ok, timedOut, resized bool) {
+	t.startKeys()
+	if d <= 0 {
+		select {
+		case k, ok := <-t.keys:
+			return k, ok, false, false
+		case <-t.resized:
+			t.size()
+			return "", true, false, true
+		}
 	}
-	b, err := t.in.ReadByte()
-	if err != nil {
-		return "", false
+	select {
+	case k, ok := <-t.keys:
+		return k, ok, false, false
+	case <-t.resized:
+		t.size()
+		return "", true, false, true
+	case <-time.After(d):
+		return "", true, true, false
+	}
+}
+
+// readKey blocks on the terminal for a single keypress. With stop set, it
+// polls instead of blocking outright, so a caller — the background reader in
+// startKeys — can give up between polls rather than staying mid-read; the
+// third return is true when that happened.
+func (t *term) readKey(stop <-chan struct{}) (key string, ok bool, stopped bool) {
+	if !t.raw {
+		k, ok := t.lineKey()
+		return k, ok, false
+	}
+	b, ok, stopped := t.readByte(stop)
+	if stopped || !ok {
+		return "", ok, stopped
 	}
 	switch b {
 	case '\r', '\n':
-		return keyEnter, true
+		return keyEnter, true, false
 	case 3, 4: // ctrl-C, ctrl-D
-		return keyQuit, true
+		return keyQuit, true, false
 	case 2: // ctrl-B
-		return keyPgUp, true
+		return keyPgUp, true, false
+	case 5: // ctrl-E
+		return keyEditor, true, false
 	case 6: // ctrl-F
-		return keyPgDn, true
+		return keyPgDn, true, false
 	case 21: // ctrl-U
-		return "u", true
+		return "u", true, false
 	case 127, 8:
-		return keyBksp, true
+		return keyBksp, true, false
 	case 0x1b:
-		return t.escape(), true
+		return t.escape(), true, false
 	}
-	return string(rune(b)), true
+	return string(rune(b)), true, false
+}
+
+// readByte reads one byte. With stop set, it polls with a short timeout
+// instead of blocking outright, checking stop between polls so the wait can
+// be abandoned — to hand the terminal to a subprocess — without a read
+// staying in flight to race it for keystrokes.
+func (t *term) readByte(stop <-chan struct{}) (b byte, ok bool, stopped bool) {
+	if stop == nil {
+		b, err := t.in.ReadByte()
+		return b, err == nil, false
+	}
+	for {
+		if t.in.Buffered() > 0 {
+			b, err := t.in.ReadByte()
+			return b, err == nil, false
+		}
+		select {
+		case <-stop:
+			return 0, false, true
+		default:
+		}
+		ready, err := waitReadable(50 * time.Millisecond)
+		if err != nil {
+			return 0, false, false
+		}
+		if ready {
+			b, err := t.in.ReadByte()
+			return b, err == nil, false
+		}
+	}
+}
+
+// waitReadable reports whether stdin has a byte ready within timeout,
+// without consuming it — select(2) on fd 0, so a poll loop can check for
+// input in short bursts instead of blocking on a read outright.
+func waitReadable(timeout time.Duration) (bool, error) {
+	var fds syscall.FdSet
+	fds.Bits[0] = 1
+	tv := syscall.NsecToTimeval(timeout.Nanoseconds())
+	err := syscall.Select(1, &fds, nil, nil, &tv)
+	if err == syscall.EINTR {
+		// A signal arrived while select(2) was waiting — our own SIGWINCH
+		// handler fires one on every resize — and interrupted it before the
+		// timeout. Not ready yet is the correct read: the poll loop just
+		// tries again, checking stop in between as usual.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return fds.Bits[0]&1 != 0, nil
 }
 
 // escape decodes an arrow key or similar. A lone Esc has nothing buffered
@@ -313,7 +507,10 @@ func (t *term) askLine(prompt string) (string, bool) {
 }
 
 // askText is askLine for free text — a query someone typed, say — where
-// lowercasing the answer the way askLine does would mangle it.
+// lowercasing the answer the way askLine does would mangle it. Ctrl-E hands
+// the draft to $EDITOR and comes back with whatever was saved there, which
+// may run to more than one line; askLine's answers never do, so it has no
+// need of this.
 func (t *term) askText(prompt string) (string, bool) {
 	t.print(prompt)
 	if !t.raw {
@@ -335,10 +532,25 @@ func (t *term) askText(prompt string) (string, bool) {
 		case k == keyEnter:
 			t.print("\n")
 			return strings.TrimSpace(sb.String()), true
+		case k == keyEditor:
+			edited, changed := t.editText(sb.String())
+			if changed {
+				sb.Reset()
+				sb.WriteString(edited)
+			}
+			t.print("\n" + prompt + sb.String())
 		case k == keyBksp:
 			if s := sb.String(); s != "" {
+				r := []rune(s)
+				last := r[len(r)-1]
 				sb.Reset()
-				sb.WriteString(s[:len(s)-1])
+				sb.WriteString(string(r[:len(r)-1]))
+				if last == '\n' {
+					// Backspacing across a line the editor added: reprint
+					// what is left rather than try to move the cursor up.
+					t.print("\n" + prompt + sb.String())
+					continue
+				}
 				fmt.Print("\b \b")
 			}
 		case len([]rune(k)) == 1:
@@ -346,4 +558,57 @@ func (t *term) askText(prompt string) (string, bool) {
 			fmt.Print(k)
 		}
 	}
+}
+
+// editText hands seed to the reader's editor — $VISUAL, then $EDITOR, then
+// vi — and returns what came back. The terminal is put back in raw mode
+// before this returns either way, so the caller's prompt can carry on
+// whether or not the editor actually succeeded; the second return is false
+// when it didn't, and the caller should keep the seed text unchanged.
+func (t *term) editText(seed string) (string, bool) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		parts = []string{"vi"}
+	}
+
+	f, err := os.CreateTemp("", "tarot-journal-*.txt")
+	if err != nil {
+		t.print(fmt.Sprintf(" (could not open the editor: %v)\n", err))
+		return seed, false
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	_, writeErr := f.WriteString(seed)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		t.print(" (could not open the editor: writing the draft failed)\n")
+		return seed, false
+	}
+
+	resume := t.suspendKeys()
+	t.suspendRaw()
+	args := append(append([]string{}, parts[1:]...), path)
+	cmd := exec.Command(parts[0], args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	runErr := cmd.Run()
+	t.resumeRaw()
+	resume()
+
+	if runErr != nil {
+		t.print(fmt.Sprintf(" (the editor reported a problem: %v)\n", runErr))
+		return seed, false
+	}
+	edited, err := os.ReadFile(path)
+	if err != nil {
+		t.print(" (could not read the draft back)\n")
+		return seed, false
+	}
+	return strings.TrimRight(string(edited), "\n"), true
 }

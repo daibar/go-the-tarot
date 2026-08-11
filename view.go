@@ -53,22 +53,20 @@ func scroll(key string, top, height int) (int, bool) {
 }
 
 // view shows text with vi-key scrolling and returns the first key it does not
-// handle itself. The second return is false at end of input.
+// handle itself. The second return is false at end of input. body is called
+// again whenever the terminal is resized, so the page reflows to the pane's
+// new width instead of staying laid out for the one it was drawn in.
 //
 // Without a terminal it simply prints everything and reads one key, so piped
 // input and redirected output still behave.
-func (t *term) view(body, hints string) (string, bool) {
+func (t *term) view(body func() string, hints string) (string, bool) {
 	return t.viewScroll(body, hints, false)
 }
 
 // viewScroll is view, optionally panning sideways as well. Only the tableau
 // wants that: everywhere else left and right mean something to the caller.
-func (t *term) viewScroll(body, hints string, sideways bool) (string, bool) {
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	widest := 0
-	for _, l := range lines {
-		widest = max(widest, visibleWidth(l))
-	}
+func (t *term) viewScroll(body func() string, hints string, sideways bool) (string, bool) {
+	lines, widest := splitBody(body())
 
 	top, left := 0, 0
 	for {
@@ -87,7 +85,12 @@ func (t *term) viewScroll(body, hints string, sideways bool) (string, bool) {
 			return fmt.Sprintf(" %s · %s · %s", where(top, maxTop), keys, hints)
 		})
 
-		key, ok := t.key()
+		key, ok, resized := t.keyOrResize()
+		if resized {
+			lines, widest = splitBody(body())
+			left = 0
+			continue
+		}
 		if !ok {
 			return "", false
 		}
@@ -108,6 +111,15 @@ func (t *term) viewScroll(body, hints string, sideways bool) (string, bool) {
 		}
 		top = next
 	}
+}
+
+// splitBody renders body into pager lines and reports the widest of them.
+func splitBody(body string) (lines []string, widest int) {
+	lines = strings.Split(strings.TrimRight(body, "\n"), "\n")
+	for _, l := range lines {
+		widest = max(widest, visibleWidth(l))
+	}
+	return lines, widest
 }
 
 // sliceVisible takes width visible columns of a line starting at from, keeping

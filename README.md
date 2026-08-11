@@ -56,8 +56,8 @@ command line.
 | `carousel` | cards turn over on their own on a timer, in order or drawn at random |
 
 Spreads deal the cards, walk you through them one at a time, then offer a review
-menu where you can revisit any card by number, export with `x`, or press `q` to
-return to the main menu.
+menu where you can revisit any card by number, add a journal entry with `j`,
+export with `x`, or press `q` to return to the main menu.
 
 The three card reading is Mirror, Oracle, Talisman: what the matter reflects
 back at you, what it is telling you, and what to carry out of it.
@@ -110,7 +110,9 @@ The imagery leads, and the summary below it is the guide's, matched to whether
 the card landed upright or reversed.
 
 The picture sizes itself to your terminal; `-height N` pins it, and `-art`
-picks which pictures appear at all.
+picks which pictures appear at all. Resize the window — widen a tmux pane, say
+— and whatever is on screen redraws at the new size on the spot, no keypress
+needed.
 
 ### Keys
 
@@ -130,6 +132,7 @@ While a card is up:
 | `Enter`, `backspace` | continue, or go back |
 | `a` | lay the whole spread out, every card in its place |
 | `t` | hide the words and the drawing, leaving the picture alone — it stays that way until you press it again |
+| `z` | blow the picture up to fill the window, no wider than the terminal — it stays that way until you press it again |
 | `m` | the mindful reading — the full contemplative essay for that card |
 | `w` | toggle Waite's 1911 divinatory meaning |
 | `e` | take a look at this card in explore mode, then come straight back to the reading, right where it left off |
@@ -160,8 +163,9 @@ the carousel from those modes directly.
 It keeps the wheel in your hands: `space` pauses and resumes, `+` and `-` change
 the pace by fifteen seconds, `→` and `←` step forward and back through what you
 have seen, and the vi keys scroll a card that runs long. `t` strips the card back
-to the picture alone, as it does everywhere else. Opening the mindful reading with `m` stops the clock until you come
-back.
+to the picture alone, and `z` blows it up to fill the window, as they do
+everywhere else. Opening the mindful reading with `m` stops the clock until you
+come back.
 
 ### Flags
 
@@ -195,6 +199,18 @@ there and silently drops every flag after it. Use `-reversals=false` or
 `-height N` sizes the picture in every mode, including `carousel` —
 `-mode carousel -height 8` pins the carousel's cards to 8 rows.
 
+An export is a new file every time — it's written with `O_EXCL`, so it never
+overwrites an earlier one; two exports in the same second get `_2`, `_3`, and
+so on appended to the name. The file itself opens with the header, then the
+journal entry if you added one, then the whole spread laid out (for a spread
+that has a layout), then each card in full — everything the interactive
+walkthrough shows, in one file, since there's no keyboard in a text editor to
+open the tableau or add a note later. Color is left out by default, since a
+plain text editor renders the picture's color codes as garbled escape
+sequences rather than color; exporting from the review menu asks first if you
+want to keep it, but `-export` from the command line has no terminal to ask
+through, so it always leaves color out.
+
 Examples:
 
     ./gtarot                                      # pick a mode, then ask your question
@@ -209,6 +225,18 @@ Examples:
     ./gtarot -mode freeform -no-reversals         # keep pulling, all upright
     ./gtarot -no-fancy -no-color -query "what now" # quick text-only Celtic cross
     ./gtarot -notes ~/notes/tarot.md -mode three  # read the guide live off disk
+
+### If it crashes
+
+A panic writes its message and stack trace to `~/tarot_crash.log`, appending
+so past crashes stay on record, rather than just closing the terminal with no
+explanation. The main loop, the background reader that pumps keystrokes to
+it, and the resize watcher each recover their own panics and log there before
+unwinding, so an unhandled crash always has a stack trace waiting.
+
+A session ending on a signal — `ctrl-c`, a `kill`, or a closed terminal
+sending `SIGHUP` — gets a line there too, naming the signal, so a session
+that "just closed" is told apart from an actual panic.
 
 ## The card guide
 

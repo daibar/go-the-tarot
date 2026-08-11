@@ -73,6 +73,7 @@ type Reading struct {
 	Query     string
 	Spread    *Spread // nil in freeform and explore modes
 	Positions []Position
+	Journal   string // the reader's own note, added from the review menu
 }
 
 // place puts a card in a position. def may be nil, for a card drawn outside of

@@ -233,7 +233,10 @@ func exploreLoop(u *ui, o *outline, embedded bool) bool {
 			paintOutline(u, o, hint)
 		}
 
-		key, ok := u.t.key()
+		key, ok, resized := u.t.keyOrResize()
+		if resized {
+			continue
+		}
 		if !ok || key == keyQuit {
 			return false
 		}
@@ -362,7 +365,10 @@ func searchOutline(u *ui, o *outline) (query string, found, canceled, ok bool) {
 		}
 		paintOutline(u, o, status)
 
-		key, ok := u.t.key()
+		key, ok, resized := u.t.keyOrResize()
+		if resized {
+			continue
+		}
 		if !ok {
 			return "", false, false, false
 		}
@@ -390,9 +396,9 @@ func searchOutline(u *ui, o *outline) (query string, found, canceled, ok bool) {
 // everywhere else in the program.
 func exploreCard(u *ui, o *outline, reversed, embedded bool) (toReading, ok bool) {
 	opts := u.opts
-	hint := "right next · left prev · o outline · m mindful · r reverse · q quit"
+	hint := "right next · left prev · o outline · t text · z fullscreen · m mindful · r reverse · q quit"
 	if embedded {
-		hint = "right next · left prev · o outline · backspace return to the reading · m mindful · r reverse · q quit"
+		hint = "right next · left prev · o outline · backspace return to the reading · t text · z fullscreen · m mindful · r reverse · q quit"
 	}
 	for {
 		row := o.rows[o.cursor]
@@ -405,7 +411,10 @@ func exploreCard(u *ui, o *outline, reversed, embedded bool) (toReading, ok bool
 		}
 		p := place(u.deck, u.deck.reversed(card, reversed), nil)
 
-		key, keyOK := u.t.view(page(p, opts), hint)
+		key, keyOK := u.t.view(func() string {
+			opts.cols, opts.rows = u.t.cols, u.t.rows
+			return page(p, opts)
+		}, hint)
 		if !keyOK || key == keyQuit {
 			return false, false
 		}
@@ -428,6 +437,12 @@ func exploreCard(u *ui, o *outline, reversed, embedded bool) (toReading, ok bool
 			}
 		case "w":
 			opts.detail = !opts.detail
+		case "t":
+			// Strip the card back to its picture, or put the words back. It
+			// stays that way until it is turned back on.
+			opts.bare = !opts.bare
+		case "z":
+			opts.full = !opts.full
 		}
 	}
 }

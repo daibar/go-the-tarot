@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -20,13 +21,47 @@ type options struct {
 	quiet   bool
 	noFancy bool
 	bare    bool          // just the picture: no drawing, no words
+	full    bool          // the picture blown up to fill the window, no panning needed
 	layout  bool          // open a spread on its tableau
 	cols    int           // terminal width the page is laid out for
 	rows    int           // terminal height, for sizing the tableau
 	dwell   time.Duration // carousel pace; 0 means wait for a keypress
 }
 
+// crashLogPath is where a panic gets written, so a sudden exit leaves more
+// behind than a closed terminal to explain it by.
+func crashLogPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "tarot_crash.log"
+	}
+	return filepath.Join(home, "tarot_crash.log")
+}
+
+// logCrash appends a panic and its stack trace to the crash log. It never
+// itself panics on failure to write one — a crash that can't be logged
+// should still unwind and let the terminal get restored.
+func logCrash(v any) {
+	f, err := os.OpenFile(crashLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "--- %s ---\n%v\n%s\n", time.Now().Format(time.RFC3339), v, debug.Stack())
+}
+
 func main() {
+	defer func() {
+		// A panic on the main goroutine unwinds through run()'s own defers
+		// first — t.close() included, so the terminal is already back to
+		// normal by the time this recovers — then lands here to log it
+		// rather than just vanishing.
+		if r := recover(); r != nil {
+			logCrash(r)
+			fmt.Fprintln(os.Stderr, "tarot: crashed — see", crashLogPath(), "for details")
+			os.Exit(1)
+		}
+	}()
 	var (
 		modeFlag    = flag.String("mode", "", "reading to do: celtic, three, freeform, explore, or carousel (default: ask)")
 		artFlag     = flag.String("art", string(artBoth), "card pictures: both, photo, sketch, or none")
@@ -162,6 +197,10 @@ func run(modeFlag string, opts options, f runFlags) error {
 			fmt.Print(plain(r, opts))
 			return nil
 		}
+		// There is no terminal here to ask whether to keep it, so exported
+		// color codes default off: a plain text editor renders them as
+		// garbled escape sequences rather than color.
+		opts.color = false
 		path, err := exportReading(r, opts)
 		if err != nil {
 			return err
@@ -227,15 +266,32 @@ func runMode(u *ui, p plan, base options) {
 	}
 }
 
-// restoreOnSignal puts the terminal back the way it was if we are killed.
+// restoreOnSignal puts the terminal back the way it was if we are killed —
+// including SIGHUP, which is what a closed terminal or a dropped ssh session
+// sends the foreground process; unlike SIGINT and SIGTERM, its default
+// disposition is to terminate immediately with no chance to clean up, which
+// looks exactly like an unexplained crash from the reader's side.
 func restoreOnSignal(t *term) {
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		<-ch
+		sig := <-ch
+		logExit(sig)
 		t.close()
 		os.Exit(130)
 	}()
+}
+
+// logExit notes which signal ended the session, in the same file a panic
+// would use: a closed terminal and a kill from outside both look like "it
+// just closed" from the reader's side, with nothing to say why otherwise.
+func logExit(sig os.Signal) {
+	f, err := os.OpenFile(crashLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "--- %s ---\nexited on signal: %s\n", time.Now().Format(time.RFC3339), sig)
 }
 
 // pickMode resolves -mode, or asks when the flag is absent. A dwell time turns
@@ -304,7 +360,7 @@ func exportReading(r *Reading, opts options) (string, error) {
 	}
 	// Exports carry the full guide material; there is no keyboard in a file.
 	opts.detail = true
-	body := []byte(plain(r, opts))
+	body := []byte(exportBody(r, opts))
 
 	// Two readings in the same second must not overwrite one another.
 	base := filepath.Join(home, "tarot_reading_"+time.Now().Format("20060102_150405"))
