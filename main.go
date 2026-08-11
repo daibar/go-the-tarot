@@ -37,6 +37,7 @@ func main() {
 		detail      = flag.Bool("detail", false, "always show the Waite (1911) meanings, not just on the w key")
 		quiet       = flag.Bool("quiet", false, "skip the \"drawing card N\" chatter")
 		height      = flag.Int("height", 0, "height in rows of the card pictures (0 = fit the terminal)")
+		hideText    = flag.Bool("hide-text", false, "start with the picture only: no drawing, no words (the same as pressing t)")
 		layout      = flag.Bool("layout", false, "open a spread on its tableau and skip the card by card walkthrough")
 		random      = flag.Bool("random", false, "carousel: draw at random from the pile rather than walking the deck in order")
 		dwell       = flag.Int("dwell", 0, "carousel: seconds each card stays up before the next turns over (0 = turn them by hand)")
@@ -44,6 +45,7 @@ func main() {
 		export      = flag.Bool("export", false, "write the reading to ~/tarot_reading_DATE.txt and exit")
 		notesPath   = flag.String("notes", "", "path to a card guide markdown file (default: the embedded copy of tarot.md)")
 		card        = flag.Bool("card", false, "draw one random card, print it small with no text, and exit")
+		query       = flag.String("query", "", `the question you're asking, for the celtic and three modes (wrap it in double quotes)`)
 	)
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -58,9 +60,12 @@ Every mode and option can be reached from the command line, without the menu:
 
   %[1]s -mode celtic -no-reversals        upright ten card spread
   %[1]s -mode three -layout               three cards, straight to the tableau
+  %[1]s -mode three -query "now what?"    three cards, with a question in mind
   %[1]s -mode freeform -reversals         keep drawing, reversals on
   %[1]s -mode carousel -dwell 90          a card every 90 seconds, in order
   %[1]s -mode carousel -random -dwell 30  ... drawn at random instead
+  %[1]s -mode carousel -height 8          smaller cards, so more fits on screen
+  %[1]s -mode carousel -hide-text         pictures only, no words, from the start
   %[1]s -mode explore -art sketch         browse the deck as line drawings
   %[1]s -card                             one card, no words, straight to the console
 `, filepath.Base(os.Args[0]))
@@ -74,10 +79,11 @@ Every mode and option can be reached from the command line, without the menu:
 		detail:  *detail,
 		quiet:   *quiet,
 		noFancy: *noFancy,
+		bare:    *hideText,
 		dwell:   time.Duration(*dwell) * time.Second,
 		layout:  *layout,
 	}, runFlags{
-		query:       strings.Join(flag.Args(), " "),
+		query:       queryString(*query),
 		reversals:   *reversals && !*noReversals,
 		random:      *random,
 		seed:        *seed,
@@ -267,6 +273,15 @@ func pickMode(u *ui, modeFlag string, f runFlags) (plan, error) {
 		return p, nil
 	}
 	return plan{}, fmt.Errorf("unknown -mode %q: want %s, freeform, explore, or carousel", modeFlag, spreadNames())
+}
+
+// queryString prefers an explicit -query flag; failing that, it falls back to
+// whatever bare words followed the flags, the way the query used to be given.
+func queryString(query string) string {
+	if query != "" {
+		return query
+	}
+	return strings.Join(flag.Args(), " ")
 }
 
 // seedFrom mixes the query string into the clock, as the bash version did with

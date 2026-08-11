@@ -168,8 +168,10 @@ back.
 | flag | meaning |
 | --- | --- |
 | `-mode M` | `celtic`, `three`, `freeform`, `explore`, or `carousel` (default: ask) |
+| `-query "Q"` | the question you're asking, for the celtic and three modes (wrap it in double quotes) |
 | `-reversals` | let cards come up reversed (on by default) |
 | `-no-reversals` | draw every card upright; the same as `-reversals=false` |
+| `-hide-text` | start with the picture only: no drawing, no words; the same as pressing `t` |
 | `-random` | carousel: draw at random from the pile rather than walking the deck in order |
 | `-art S` | `both` (default), `photo` (the deck scan), `sketch` (the guide's line drawing), or `none` |
 | `-detail` | always show Waite (1911), rather than waiting for the `w` key |
@@ -183,17 +185,29 @@ back.
 | `-export` | deal a spread straight to `~/tarot_reading_YYYYMMDD_HHMMSS.txt` and exit |
 | `-notes PATH` | read the card guide from a markdown file instead of the embedded copy |
 
+`-reversals` and `-no-reversals` (and `-hide-text`) are boolean flags, which Go's
+flag package only accepts as `-flag`, `-flag=true`, or `-flag=false` — never as
+`-flag false` with a space. `-reversals false` parses `-reversals` as true and
+then treats the bare word `false` as the query, which also stops flag parsing
+there and silently drops every flag after it. Use `-reversals=false` or
+`-no-reversals` instead; this applies in every mode, not just `three`.
+
+`-height N` sizes the picture in every mode, including `carousel` —
+`-mode carousel -height 8` pins the carousel's cards to 8 rows.
+
 Examples:
 
     ./gtarot                                      # pick a mode, then ask your question
-    ./gtarot -mode three should I take the job
+    ./gtarot -mode three -query "should I take the job"
     ./gtarot -mode celtic -layout                 # straight to the whole tableau
     ./gtarot -mode carousel -random -dwell 30     # a random card every 30 seconds
     ./gtarot -mode explore                        # browse the deck by section
     ./gtarot -mode carousel -dwell 90             # a card every 90 seconds, in order
+    ./gtarot -mode carousel -height 8 -dwell 30   # smaller cards, so more fits on screen
+    ./gtarot -mode carousel -hide-text -dwell 20  # pictures only, no words, from the start
     ./gtarot -mode freeform -dwell 60             # a random card every minute
     ./gtarot -mode freeform -no-reversals         # keep pulling, all upright
-    ./gtarot -no-fancy -no-color what now         # quick text-only Celtic cross
+    ./gtarot -no-fancy -no-color -query "what now" # quick text-only Celtic cross
     ./gtarot -notes ~/notes/tarot.md -mode three  # read the guide live off disk
 
 ## The card guide

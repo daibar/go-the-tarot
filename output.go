@@ -222,7 +222,11 @@ func page(p Position, opts options) string {
 		sb.WriteString(" \n")
 	}
 	sb.WriteString(indent(strings.Join(lines, "\n"), " ") + "\n \n")
-	sb.WriteString(divider + "\n")
+	if !opts.bare {
+		// The divider is wider than a bare picture and wraps badly on a
+		// narrow terminal, with nothing else on the card to make sense of it.
+		sb.WriteString(divider + "\n")
+	}
 	return sb.String()
 }
 

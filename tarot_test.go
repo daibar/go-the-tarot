@@ -415,7 +415,10 @@ func TestBareHidesTheWordsAndTheName(t *testing.T) {
 			t.Errorf("picture-only page still shows %q", gone)
 		}
 	}
-	if !strings.Contains(bare, divider) || len(strings.Split(bare, "\n")) < 8 {
+	if strings.Contains(bare, divider) {
+		t.Error("picture-only page should not show the divider: it's wider than the picture and wraps badly")
+	}
+	if len(strings.Split(bare, "\n")) < 8 {
 		t.Error("picture-only page should still show the picture")
 	}
 }
